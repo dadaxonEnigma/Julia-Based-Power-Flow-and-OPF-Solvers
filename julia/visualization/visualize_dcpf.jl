@@ -3,7 +3,7 @@ using GraphPlot
 using LinearAlgebra
 using Printf
 
-include("dc_power_flow.jl")
+include("../solvers/dc_power_flow.jl")
 
 """
 Визуализация результатов DC Power Flow

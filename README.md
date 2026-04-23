@@ -96,20 +96,32 @@ G1 (cheap, 20 €/MWh)       G2 (expensive, 50 €/MWh)
 ```
 thesis/
 ├── julia/
-│   ├── dc_power_flow.jl      # DC Power Flow
-│   ├── ac_power_flow_pm.jl   # AC Power Flow (PowerModels.jl)
-│   ├── lopf.jl               # LOPF (JuMP + HiGHS)
-│   └── visualize_dcpf.jl     # Visualisation helpers
+│   ├── solvers/                    # Core algorithm implementations
+│   │   ├── dc_power_flow.jl        # DC Power Flow (B·θ = P)
+│   │   ├── ac_power_flow.jl        # AC Power Flow (PowerModels.jl + Ipopt)
+│   │   └── lopf.jl                 # LOPF (JuMP + HiGHS)
+│   ├── benchmarks/                 # Performance measurement
+│   │   ├── benchmark.jl            # Benchmark runner (DC PF + LOPF)
+│   │   └── plot_benchmarks.jl      # Benchmark result visualisation
+│   └── visualization/              # Network and result plots
+│       ├── visualize_dcpf.jl       # DC PF network visualisation
+│       └── visualize_results.jl    # General result visualisation
 ├── python/
-│   ├── dc_power_flow.py      # DC Power Flow (PyPSA lpf)
-│   ├── ac_power_flow.py      # AC Power Flow (PyPSA pf)
-│   ├── lopf.py               # LOPF (PyPSA optimize)
-│   └── explore.py            # PyPSA API exploration
-├── results/                  # Generated plots (PNG)
-│   ├── network_topology.png
-│   ├── voltage_angles.png
-│   ├── line_flows.png
-│   └── network_with_flows.png
+│   ├── dc_power_flow.py            # DC Power Flow (PyPSA lpf)
+│   ├── ac_power_flow.py            # AC Power Flow (PyPSA pf)
+│   ├── lopf.py                     # LOPF (PyPSA optimize)
+│   └── explore.py                  # PyPSA API exploration
+├── latex/
+│   ├── thesis.tex                  # Main LaTeX document
+│   ├── introduction.tex            # Introduction + Related Work
+│   ├── ch2_methodology.tex         # Chapter 2: Design and Methodology
+│   ├── ch3_implementation.tex      # Chapter 3: Implementation and Experiments
+│   ├── ch4_conclusions.tex         # Chapter 4: Conclusions and Future Work
+│   └── literature.bib              # Bibliography
+├── results/                        # Generated plots (PNG)
+│   ├── benchmark_time.png
+│   ├── benchmark_combined.png
+│   └── results_validation.png
 └── tests/
     └── test_julia.jl
 ```
