@@ -40,6 +40,9 @@ function network_to_powermodels(buses, lines, generators, loads, v_nom=380.0)
     end
     
    
+    # Bus 1 is always the reference (slack) bus
+    slack_bus = minimum(keys(generators))
+
     gen_idx = 1
     for (bus, (P, V_set)) in generators
         data["gen"]["$gen_idx"] = Dict{String, Any}(
@@ -55,12 +58,14 @@ function network_to_powermodels(buses, lines, generators, loads, v_nom=380.0)
             "gen_status" => 1,
             "index" => gen_idx
         )
-        
 
-        if gen_idx == 1
+        # Slack bus → type 3; all other generator buses → type 2 (PV)
+        if bus == slack_bus
             data["bus"]["$bus"]["bus_type"] = 3
+        else
+            data["bus"]["$bus"]["bus_type"] = 2
         end
-        
+
         gen_idx += 1
     end
     
@@ -221,6 +226,8 @@ end
 
 
 
+if abspath(PROGRAM_FILE) == @__FILE__
+
 println("\n\nCreating test network (same as PyPSA)...")
 
 buses = ["Bus 0", "Bus 1", "Bus 2"]
@@ -273,3 +280,5 @@ if results !== nothing
         println("\n⚠️  Some differences detected (but might be acceptable)")
     end
 end
+
+end # if abspath(PROGRAM_FILE) == @__FILE__
