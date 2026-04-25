@@ -115,7 +115,7 @@ end
 # ----------------------------------------------------------------
 #  Save CSV (appends AC_PF rows; run alongside DC/LOPF benchmarks)
 # ----------------------------------------------------------------
-open("../../results/julia_ac_benchmark.csv", "w") do io
+open(joinpath(@__DIR__, "..", "..", "results", "julia_ac_benchmark.csv"), "w") do io
     println(io, "module,n_buses,time_ms")
     for n in AC_SIZES
         println(io, "AC_PF,$n,$(ac_results[n])")
