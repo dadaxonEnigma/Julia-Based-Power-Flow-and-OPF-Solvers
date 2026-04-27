@@ -32,6 +32,10 @@ mutable struct Network
     generators::Dict{String, Generator}
     loads::Dict{String, Load}
     storage_units::Dict{String, StorageUnit}
+    stores::Dict{String, Store}
+    carriers::Dict{String, Carrier}
+    links::Dict{String, Link}
+    global_constraints::Dict{String, GlobalConstraint}
 end
 
 function Network(; name = "Network", baseMVA = 100.0)
@@ -44,6 +48,10 @@ function Network(; name = "Network", baseMVA = 100.0)
         Dict{String, Generator}(),
         Dict{String, Load}(),
         Dict{String, StorageUnit}(),
+        Dict{String, Store}(),
+        Dict{String, Carrier}(),
+        Dict{String, Link}(),
+        Dict{String, GlobalConstraint}(),
     )
 end
 
@@ -96,6 +104,34 @@ function add_storage_unit!(net::Network, name::String, bus::String; kwargs...)
     return net
 end
 
+function add_store!(net::Network, name::String, bus::String; kwargs...)
+    haskey(net.stores, name) && error("Store '$name' already exists")
+    haskey(net.buses, bus)   || error("bus '$bus' not in network")
+    net.stores[name] = Store(name, bus; kwargs...)
+    return net
+end
+
+function add_carrier!(net::Network, name::String; kwargs...)
+    haskey(net.carriers, name) && error("Carrier '$name' already exists")
+    net.carriers[name] = Carrier(name; kwargs...)
+    return net
+end
+
+function add_link!(net::Network, name::String,
+                   bus0::String, bus1::String; kwargs...)
+    haskey(net.links, name)    && error("Link '$name' already exists")
+    haskey(net.buses, bus0)    || error("bus0 '$bus0' not in network")
+    haskey(net.buses, bus1)    || error("bus1 '$bus1' not in network")
+    net.links[name] = Link(name, bus0, bus1; kwargs...)
+    return net
+end
+
+function add_global_constraint!(net::Network, name::String; kwargs...)
+    haskey(net.global_constraints, name) && error("GlobalConstraint '$name' already exists")
+    net.global_constraints[name] = GlobalConstraint(name; kwargs...)
+    return net
+end
+
 # ============================================================
 #  Query helpers
 # ============================================================
@@ -111,14 +147,18 @@ generators_at(net::Network, bus::String) =
 loads_at(net::Network, bus::String) =
     [l for l in values(net.loads) if l.bus == bus]
 
-"""Return all branches (lines + transformers) incident to a bus."""
+"""Return passive branches (lines + transformers) incident to a bus."""
 function branches_at(net::Network, bus::String)
-    lines = [l for l in values(net.lines)
-             if l.from_bus == bus || l.to_bus == bus]
+    lines  = [l for l in values(net.lines)
+              if l.from_bus == bus || l.to_bus == bus]
     trafos = [t for t in values(net.transformers)
               if t.from_bus == bus || t.to_bus == bus]
     return vcat(lines, trafos)
 end
+
+"""Return all Links connected to a bus (either side)."""
+links_at(net::Network, bus::String) =
+    [l for l in values(net.links) if l.bus0 == bus || l.bus1 == bus]
 
 """Total installed generation capacity [MW]."""
 total_p_nom(net::Network) = sum(g.p_nom for g in values(net.generators); init=0.0)
@@ -142,10 +182,14 @@ bus_index(net::Network) = Dict(b => i for (i, b) in enumerate(bus_names(net)))
 
 function Base.show(io::IO, net::Network)
     println(io, "Network: \"$(net.name)\"  (baseMVA = $(net.baseMVA) MVA)")
-    println(io, "  Buses        : $(length(net.buses))")
-    println(io, "  Lines        : $(length(net.lines))")
-    println(io, "  Transformers : $(length(net.transformers))")
-    println(io, "  Generators   : $(length(net.generators))")
-    println(io, "  Loads        : $(length(net.loads))")
-    print(io,   "  Storage units: $(length(net.storage_units))")
+    println(io, "  Buses             : $(length(net.buses))")
+    println(io, "  Lines             : $(length(net.lines))")
+    println(io, "  Transformers      : $(length(net.transformers))")
+    println(io, "  Links             : $(length(net.links))")
+    println(io, "  Generators        : $(length(net.generators))")
+    println(io, "  Loads             : $(length(net.loads))")
+    println(io, "  Storage units     : $(length(net.storage_units))")
+    println(io, "  Stores            : $(length(net.stores))")
+    println(io, "  Carriers          : $(length(net.carriers))")
+    print(io,   "  Global constraints: $(length(net.global_constraints))")
 end

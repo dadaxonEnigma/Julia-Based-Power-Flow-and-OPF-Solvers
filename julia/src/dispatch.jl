@@ -321,12 +321,15 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
     P_load = zeros(n)
     for l in values(net.loads); P_load[bidx[l.bus]] += l.p_set; end
 
-    disp_gens = [g for g in values(net.generators) if g.carrier != "wind"]
-    wind_inj  = zeros(n)
+    disp_gens  = [g for g in values(net.generators) if g.carrier != "wind"]
+    wind_inj   = zeros(n)
     for g in values(net.generators)
         g.carrier == "wind" && (wind_inj[bidx[g.bus]] += g.p_nom * g.p_max_pu)
     end
     isempty(disp_gens) && error("No dispatchable generators in network")
+
+    link_units  = collect(values(net.links))
+    store_units = collect(values(net.stores))
 
     model = Model(HiGHS.Optimizer); set_silent(model)
 
@@ -335,14 +338,35 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
               lower_bound = g.p_nom * g.p_min_pu,
               upper_bound = g.p_nom * g.p_max_pu)
 
+    # Link variables: p_link > 0 → power flows bus0 → bus1
+    if !isempty(link_units)
+        @variable(model, p_link[l in link_units],
+                  lower_bound = l.p_nom * l.p_min_pu,
+                  upper_bound = l.p_nom * l.p_max_pu)
+    end
+
+    # Store: single net power (p > 0 = inject to grid). Single period → no SoC.
+    if !isempty(store_units)
+        @variable(model, p_store[s in store_units],
+                  lower_bound = -s.p_nom,
+                  upper_bound =  s.p_nom)
+    end
+
     @constraint(model, θ[ref] == 0.0)
 
     for k in 1:n
         gen_inj = sum(P_gen[g] for g in disp_gens if bidx[g.bus] == k;
                       init = AffExpr(0.0))
+        link_inj = isempty(link_units) ? 0.0 :
+            sum( (l.bus1 == bnames[k] ?  l.efficiency : 0.0) * p_link[l] +
+                 (l.bus0 == bnames[k] ? -1.0          : 0.0) * p_link[l]
+                 for l in link_units; init = AffExpr(0.0))
+        store_inj = isempty(store_units) ? AffExpr(0.0) :
+            sum(p_store[s] for s in store_units if bidx[s.bus] == k;
+                init = AffExpr(0.0))
         @constraint(model,
             sum(B[k,m]*θ[m] for m in 1:n) ==
-            gen_inj + wind_inj[k] - P_load[k] + P_shift[k])
+            gen_inj + wind_inj[k] + link_inj + store_inj - P_load[k] + P_shift[k])
     end
 
     line_list = collect(values(net.lines))
@@ -355,8 +379,6 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
         @constraint(model, b*(θ[f]-θ[t]) >= -lim)
     end
 
-    # Transformer thermal limits with phase-shift correction:
-    #   |b_eff · (θ_f − θ_t − φ)| ≤ s_nom
     for tr in values(net.transformers)
         lim = isfinite(tr.s_nom) ? tr.s_nom : line_capacity
         isfinite(lim) || continue
@@ -367,18 +389,45 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
         @constraint(model, b_eff*(θ[f]-θ[t]-φ) >= -lim)
     end
 
-    @objective(model, Min, sum(g.marginal_cost * P_gen[g] for g in disp_gens))
+    # GlobalConstraints (e.g. CO₂ cap)
+    for gc in values(net.global_constraints)
+        isfinite(gc.constant) || continue
+        expr = sum(P_gen[g] * get(gc.carrier_weightings, g.carrier, 0.0)
+                   for g in disp_gens; init = AffExpr(0.0))
+        if gc.sense == "<="
+            @constraint(model, expr <= gc.constant)
+        elseif gc.sense == ">="
+            @constraint(model, expr >= gc.constant)
+        else
+            @constraint(model, expr == gc.constant)
+        end
+    end
+
+    obj = sum(g.marginal_cost * P_gen[g] for g in disp_gens)
+    if !isempty(link_units)
+        obj += sum(l.marginal_cost * p_link[l]
+                   for l in link_units if l.marginal_cost > 0; init = AffExpr(0.0))
+    end
+    if !isempty(store_units)
+        obj += sum(s.marginal_cost * p_store[s]
+                   for s in store_units if s.marginal_cost > 0; init = AffExpr(0.0))
+    end
+    @objective(model, Min, obj)
 
     optimize!(model)
     status    = termination_status(model)
     converged = status ∈ (MOI.OPTIMAL, MOI.LOCALLY_SOLVED)
     !converged && @warn "LOPF status: $status"
 
-    θ_val = value.(θ)
-    P_gen_val = Dict(g.name => value(P_gen[g]) for g in disp_gens)
-    P_line    = [(net.baseMVA / l.x) *
-                 (θ_val[bidx[l.from_bus]] - θ_val[bidx[l.to_bus]])
-                 for l in line_list]
+    θ_val      = value.(θ)
+    P_gen_val  = Dict(g.name => value(P_gen[g]) for g in disp_gens)
+    P_link_val = isempty(link_units) ? Dict{String,Float64}() :
+                 Dict(l.name => value(p_link[l]) for l in link_units)
+    P_store_val= isempty(store_units) ? Dict{String,Float64}() :
+                 Dict(s.name => value(p_store[s]) for s in store_units)
+    P_line     = [(net.baseMVA / l.x) *
+                  (θ_val[bidx[l.from_bus]] - θ_val[bidx[l.to_bus]])
+                  for l in line_list]
     total_cost = objective_value(model)
 
     if verbose && converged
@@ -393,6 +442,15 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
             @printf("  %-16s  %8.2f  %10.2f  %12.2f\n",
                     g.name, P_gen_val[g.name], g.p_nom*g.p_max_pu, g.marginal_cost)
         end
+        if !isempty(link_units)
+            println("\n  Link flows:")
+            @printf("  %-14s  %8s  %8s\n", "Link", "P0 (MW)", "P1 (MW)")
+            println("  " * "─"^34)
+            for l in link_units
+                p0 = P_link_val[l.name]
+                @printf("  %-14s  %8.2f  %8.2f\n", l.name, p0, l.efficiency*p0)
+            end
+        end
         println("\n  Line flows:")
         @printf("  %-14s  %8s  %10s\n", "Line", "P (MW)", "Loading")
         println("  " * "─"^36)
@@ -405,8 +463,8 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
         println("="^62)
     end
 
-    return (θ=θ_val, P_gen=P_gen_val, P_line=P_line,
-            total_cost=total_cost, converged=converged, status=status)
+    return (θ=θ_val, P_gen=P_gen_val, P_link=P_link_val, P_store=P_store_val,
+            P_line=P_line, total_cost=total_cost, converged=converged, status=status)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -447,9 +505,11 @@ function lopf_multiperiod(net::Network;
     P_load_base = zeros(n)
     for l in values(net.loads); P_load_base[bidx[l.bus]] += l.p_set; end
 
-    disp_gens  = [g for g in values(net.generators) if g.carrier != "wind"]
-    wind_gens  = [g for g in values(net.generators) if g.carrier == "wind"]
-    stor_units = collect(values(net.storage_units))
+    disp_gens   = [g for g in values(net.generators) if g.carrier != "wind"]
+    wind_gens   = [g for g in values(net.generators) if g.carrier == "wind"]
+    stor_units  = collect(values(net.storage_units))
+    store_units = collect(values(net.stores))
+    link_units  = collect(values(net.links))
 
     model = Model(HiGHS.Optimizer); set_silent(model)
 
@@ -458,6 +518,33 @@ function lopf_multiperiod(net::Network;
     @variable(model, P_gen[g in disp_gens, 1:T],
               lower_bound = g.p_nom * g.p_min_pu,
               upper_bound = g.p_nom * g.p_max_pu)
+
+    # Link variables
+    if !isempty(link_units)
+        @variable(model, p_link[l in link_units, 1:T],
+                  lower_bound = l.p_nom * l.p_min_pu,
+                  upper_bound = l.p_nom * l.p_max_pu)
+    end
+
+    # Store variables: single net power + SoC
+    if !isempty(store_units)
+        @variable(model, p_store[s in store_units, 1:T],
+                  lower_bound = -s.p_nom,
+                  upper_bound =  s.p_nom)
+        @variable(model, e_store[s in store_units, 0:T],
+                  lower_bound = s.e_nom * s.e_min_pu,
+                  upper_bound = s.e_nom * s.e_max_pu)
+        for s in store_units
+            e0 = s.e_initial > 0 ? s.e_initial : s.e_nom * 0.5
+            @constraint(model, e_store[s,0] == e0)
+            for t in 1:T
+                # E(t) = (1-sl)·E(t-1) - p(t)  [p>0 discharges]
+                @constraint(model,
+                    e_store[s,t] == (1-s.standing_loss)*e_store[s,t-1] - p_store[s,t])
+            end
+            s.e_cyclic && @constraint(model, e_store[s,T] == e_store[s,0])
+        end
+    end
 
     if !isempty(stor_units)
         @variable(model, p_ch[s in stor_units, 1:T],
@@ -500,9 +587,18 @@ function lopf_multiperiod(net::Network;
                            for s in stor_units if bidx[s.bus]==k;
                            init=AffExpr(0.0))
 
+            link_inj = isempty(link_units) ? 0.0 :
+                sum( (l.bus1 == bnames[k] ?  l.efficiency : 0.0) * p_link[l,t] +
+                     (l.bus0 == bnames[k] ? -1.0          : 0.0) * p_link[l,t]
+                     for l in link_units; init = AffExpr(0.0))
+            store_inj = isempty(store_units) ? AffExpr(0.0) :
+                sum(p_store[s,t] for s in store_units if bidx[s.bus]==k;
+                    init = AffExpr(0.0))
+
             @constraint(model,
                 sum(B[k,m]*θ[m,t] for m in 1:n) ==
-                gen_inj + wind_inj + stor_net - P_load_base[k]*prof_t + P_shift[k])
+                gen_inj + wind_inj + stor_net + link_inj + store_inj
+                - P_load_base[k]*prof_t + P_shift[k])
         end
 
         for l in line_list
@@ -514,7 +610,6 @@ function lopf_multiperiod(net::Network;
             @constraint(model, b*(θ[f,t]-θ[tt,t]) >= -lim)
         end
 
-        # Transformer thermal limits with phase-shift correction
         for tr in values(net.transformers)
             lim = isfinite(tr.s_nom) ? tr.s_nom : line_capacity
             isfinite(lim) || continue
@@ -526,9 +621,33 @@ function lopf_multiperiod(net::Network;
         end
     end
 
+    # ── GlobalConstraints (CO₂ cap etc.) ───────────────────────────
+    for gc in values(net.global_constraints)
+        isfinite(gc.constant) || continue
+        expr = sum(P_gen[g,t] * get(gc.carrier_weightings, g.carrier, 0.0)
+                   for g in disp_gens, t in 1:T; init = AffExpr(0.0))
+        if gc.sense == "<="
+            @constraint(model, expr <= gc.constant)
+        elseif gc.sense == ">="
+            @constraint(model, expr >= gc.constant)
+        else
+            @constraint(model, expr == gc.constant)
+        end
+    end
+
     # ── Objective ──────────────────────────────────────────────────
-    @objective(model, Min,
-        sum(g.marginal_cost * P_gen[g,t] for g in disp_gens, t in 1:T))
+    obj = sum(g.marginal_cost * P_gen[g,t] for g in disp_gens, t in 1:T)
+    if !isempty(link_units)
+        obj += sum(l.marginal_cost * p_link[l,t]
+                   for l in link_units, t in 1:T if l.marginal_cost > 0;
+                   init = AffExpr(0.0))
+    end
+    if !isempty(store_units)
+        obj += sum(s.marginal_cost * p_store[s,t]
+                   for s in store_units, t in 1:T if s.marginal_cost > 0;
+                   init = AffExpr(0.0))
+    end
+    @objective(model, Min, obj)
 
     optimize!(model)
     status = termination_status(model)
@@ -543,6 +662,13 @@ function lopf_multiperiod(net::Network;
                Dict(s.name => [value(p_ch[s,t])    for t in 1:T] for s in stor_units)
     pdis_out = isempty(stor_units) ? Dict{String,Vector{Float64}}() :
                Dict(s.name => [value(p_dis[s,t])   for t in 1:T] for s in stor_units)
+
+    store_e_out = isempty(store_units) ? Dict{String,Vector{Float64}}() :
+                  Dict(s.name => [value(e_store[s,t]) for t in 0:T] for s in store_units)
+    store_p_out = isempty(store_units) ? Dict{String,Vector{Float64}}() :
+                  Dict(s.name => [value(p_store[s,t]) for t in 1:T] for s in store_units)
+    link_p_out  = isempty(link_units) ? Dict{String,Vector{Float64}}() :
+                  Dict(l.name => [value(p_link[l,t]) for t in 1:T] for l in link_units)
 
     total_cost = objective_value(model)
 
@@ -559,15 +685,29 @@ function lopf_multiperiod(net::Network;
                     name, sum(vec)/T, maximum(vec), minimum(vec))
         end
         if !isempty(soc_out)
-            println("\n  Storage SoC range [MWh]:")
+            println("\n  StorageUnit SoC range [MWh]:")
             for (name, vec) in soc_out
-                @printf("  %-16s  min=%6.1f  max=%6.1f\n",
-                        name, minimum(vec), maximum(vec))
+                @printf("  %-16s  min=%6.1f  max=%6.1f\n", name, minimum(vec), maximum(vec))
+            end
+        end
+        if !isempty(store_e_out)
+            println("\n  Store energy range [MWh]:")
+            for (name, vec) in store_e_out
+                @printf("  %-16s  min=%6.1f  max=%6.1f\n", name, minimum(vec), maximum(vec))
+            end
+        end
+        if !isempty(link_p_out)
+            println("\n  Link avg flow [MW]:")
+            for (name, vec) in link_p_out
+                @printf("  %-16s  avg=%6.1f\n", name, sum(vec)/T)
             end
         end
         println("="^65)
     end
 
-    return (gen_dispatch=gen_dispatch, soc=soc_out, p_ch=pch_out, p_dis=pdis_out,
+    return (gen_dispatch=gen_dispatch,
+            soc=soc_out, p_ch=pch_out, p_dis=pdis_out,
+            store_e=store_e_out, store_p=store_p_out,
+            link_p=link_p_out,
             total_cost=total_cost, status=status)
 end
