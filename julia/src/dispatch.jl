@@ -354,6 +354,8 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
 
     @constraint(model, θ[ref] == 0.0)
 
+    # Store balance constraints to extract LMP (dual variables) after solve
+    balance_con = Vector{Any}(undef, n)
     for k in 1:n
         gen_inj = sum(P_gen[g] for g in disp_gens if bidx[g.bus] == k;
                       init = AffExpr(0.0))
@@ -364,7 +366,7 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
         store_inj = isempty(store_units) ? AffExpr(0.0) :
             sum(p_store[s] for s in store_units if bidx[s.bus] == k;
                 init = AffExpr(0.0))
-        @constraint(model,
+        balance_con[k] = @constraint(model,
             sum(B[k,m]*θ[m] for m in 1:n) ==
             gen_inj + wind_inj[k] + link_inj + store_inj - P_load[k] + P_shift[k])
     end
@@ -430,6 +432,13 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
                   for l in line_list]
     total_cost = objective_value(model)
 
+    # Locational Marginal Prices: dual of nodal power balance constraints.
+    # LMP[k] = marginal cost of serving 1 extra MW at bus k [€/MWh].
+    # Sign: dual() in JuMP minimisation gives ∂obj/∂(RHS constant).
+    # Our RHS constant = wind_inj - P_load + P_shift, so ∂(RHS)/∂P_load = -1,
+    # therefore LMP = -dual(balance_con[k]).
+    lmp = Dict(bnames[k] => -dual(balance_con[k]) for k in 1:n)
+
     if verbose && converged
         println("="^62)
         println("LOPF — $(net.name)")
@@ -459,12 +468,24 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
             loading = isfinite(lim) ? @sprintf("%7.1f%%", abs(P_line[i])/lim*100) : "  —"
             @printf("  %-14s  %8.2f  %10s\n", l.name, P_line[i], loading)
         end
+        println("\n  Locational Marginal Prices (LMP):")
+        @printf("  %-14s  %10s\n", "Bus", "LMP (€/MWh)")
+        println("  " * "─"^28)
+        for b in bnames
+            @printf("  %-14s  %10.4f\n", b, lmp[b])
+        end
+        lmp_vals = collect(values(lmp))
+        if maximum(lmp_vals) - minimum(lmp_vals) > 0.01
+            @printf("  Congestion rent: %.4f €/MWh\n",
+                    maximum(lmp_vals) - minimum(lmp_vals))
+        end
         @printf("\n  Total cost: %.2f €/h\n", total_cost)
         println("="^62)
     end
 
     return (θ=θ_val, P_gen=P_gen_val, P_link=P_link_val, P_store=P_store_val,
-            P_line=P_line, total_cost=total_cost, converged=converged, status=status)
+            P_line=P_line, lmp=lmp, total_cost=total_cost,
+            converged=converged, status=status)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -569,7 +590,8 @@ function lopf_multiperiod(net::Network;
     end
 
     # ── Per-period constraints ──────────────────────────────────────
-    line_list = collect(values(net.lines))
+    line_list   = collect(values(net.lines))
+    balance_con = Matrix{Any}(undef, n, T)   # for LMP extraction
     for t in 1:T
         prof_t = load_profile[mod1(t, length(load_profile))]
         wprf_t = wind_profile[mod1(t, length(wind_profile))]
@@ -586,7 +608,6 @@ function lopf_multiperiod(net::Network;
                        sum(p_dis[s,t] - p_ch[s,t]
                            for s in stor_units if bidx[s.bus]==k;
                            init=AffExpr(0.0))
-
             link_inj = isempty(link_units) ? 0.0 :
                 sum( (l.bus1 == bnames[k] ?  l.efficiency : 0.0) * p_link[l,t] +
                      (l.bus0 == bnames[k] ? -1.0          : 0.0) * p_link[l,t]
@@ -595,7 +616,7 @@ function lopf_multiperiod(net::Network;
                 sum(p_store[s,t] for s in store_units if bidx[s.bus]==k;
                     init = AffExpr(0.0))
 
-            @constraint(model,
+            balance_con[k, t] = @constraint(model,
                 sum(B[k,m]*θ[m,t] for m in 1:n) ==
                 gen_inj + wind_inj + stor_net + link_inj + store_inj
                 - P_load_base[k]*prof_t + P_shift[k])
@@ -670,6 +691,9 @@ function lopf_multiperiod(net::Network;
     link_p_out  = isempty(link_units) ? Dict{String,Vector{Float64}}() :
                   Dict(l.name => [value(p_link[l,t]) for t in 1:T] for l in link_units)
 
+    # Time-varying LMP: LMP[bus][t] = marginal price at bus k, period t [€/MWh]
+    lmp_t = Dict(bnames[k] => [-dual(balance_con[k,t]) for t in 1:T] for k in 1:n)
+
     total_cost = objective_value(model)
 
     if verbose
@@ -702,12 +726,20 @@ function lopf_multiperiod(net::Network;
                 @printf("  %-16s  avg=%6.1f\n", name, sum(vec)/T)
             end
         end
+        println("\n  LMP summary (€/MWh):")
+        @printf("  %-14s  %8s  %8s  %8s\n", "Bus", "Avg", "Min", "Max")
+        println("  " * "─"^42)
+        for b in bnames
+            v = lmp_t[b]
+            @printf("  %-14s  %8.3f  %8.3f  %8.3f\n",
+                    b, sum(v)/T, minimum(v), maximum(v))
+        end
         println("="^65)
     end
 
     return (gen_dispatch=gen_dispatch,
             soc=soc_out, p_ch=pch_out, p_dis=pdis_out,
             store_e=store_e_out, store_p=store_p_out,
-            link_p=link_p_out,
+            link_p=link_p_out, lmp=lmp_t,
             total_cost=total_cost, status=status)
 end
