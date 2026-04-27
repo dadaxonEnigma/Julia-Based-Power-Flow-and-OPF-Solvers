@@ -42,7 +42,10 @@ const DEFAULT_WIND_PROFILE = [
 # ────────────────────────────────────────────────────────────────────────────
 
 # Build susceptance matrix B and per-branch susceptance vector.
-# Transformers are approximated as lines (tap ignored in DC formulation).
+# Transformer model (simplified DC, consistent with PyPSA / MATPOWER):
+#   b_eff = (baseMVA / x) / tap_ratio
+#   Both diagonal entries receive b_eff (symmetric approximation).
+#   Phase shift is noted in the Transformer struct but not applied in DC PF.
 function _build_B(net::Network, bidx::Dict{String,Int})
     n   = length(bidx)
     B   = zeros(n, n)
@@ -57,15 +60,16 @@ function _build_B(net::Network, bidx::Dict{String,Int})
     end
     for tr in values(net.transformers)
         f = bidx[tr.from_bus]; t = bidx[tr.to_bus]
-        b = net.baseMVA / tr.x
-        push!(sus, b); push!(branch_names, tr.name)
-        B[f,f]+=b; B[t,t]+=b; B[f,t]-=b; B[t,f]-=b
+        b_eff = net.baseMVA / (tr.x * tr.tap_ratio)   # PyPSA-style tap correction
+        push!(sus, b_eff); push!(branch_names, tr.name)
+        B[f,f]+=b_eff; B[t,t]+=b_eff; B[f,t]-=b_eff; B[t,f]-=b_eff
     end
     return B, sus, branch_names
 end
 
-# Build full nodal admittance matrix Y = G + jB from lines only.
-# (Used by linear_ac_pf; transformers require separate handling.)
+# Build full nodal admittance matrix Y = G + jB for LACPF.
+# Transformer model (simplified): y_eff = y / tap_ratio (both sides symmetric).
+# Phase shift is not yet applied (conservative linearisation).
 function _build_Y(net::Network, bidx::Dict{String,Int})
     n = length(bidx)
     G = zeros(n, n); B = zeros(n, n)
@@ -76,7 +80,36 @@ function _build_Y(net::Network, bidx::Dict{String,Int})
         G[f,f]+=g_ij; G[t,t]+=g_ij; G[f,t]-=g_ij; G[t,f]-=g_ij
         B[f,f]+=b_ij; B[t,t]+=b_ij; B[f,t]-=b_ij; B[t,f]-=b_ij
     end
+    for tr in values(net.transformers)
+        f = bidx[tr.from_bus]; t = bidx[tr.to_bus]
+        a    = tr.tap_ratio
+        d    = tr.r^2 + tr.x^2
+        g_ij = tr.r / d / a    # g_eff = g / a
+        b_ij = tr.x / d / a    # b_eff = b / a
+        G[f,f]+=g_ij; G[t,t]+=g_ij; G[f,t]-=g_ij; G[t,f]-=g_ij
+        B[f,f]+=b_ij; B[t,t]+=b_ij; B[f,t]-=b_ij; B[t,f]-=b_ij
+    end
     return G .* net.baseMVA, B .* net.baseMVA  # scale to [MW/rad], [MW/p.u.-V]
+end
+
+# Phase-shift correction vector for DC PF and LOPF.
+# A transformer with phase shift φ [deg] contributes a fixed equivalent injection:
+#   P_shift[from] += b_eff · φ_rad
+#   P_shift[to]   -= b_eff · φ_rad
+# The nodal equation becomes:  B·θ = P_inj + P_shift
+# Branch flow:  P_ft = b_eff · (θ_f − θ_t − φ_rad)
+function _phase_shift_injection(net::Network, bidx::Dict{String,Int})
+    n       = length(bidx)
+    P_shift = zeros(n)
+    for tr in values(net.transformers)
+        tr.phase_shift == 0.0 && continue
+        f     = bidx[tr.from_bus]; t = bidx[tr.to_bus]
+        φ     = tr.phase_shift * π / 180
+        b_eff = net.baseMVA / (tr.x * tr.tap_ratio)
+        P_shift[f] += b_eff * φ
+        P_shift[t] -= b_eff * φ
+    end
+    return P_shift
 end
 
 function _slack_index(net::Network, bidx::Dict{String,Int})
@@ -112,6 +145,7 @@ function dc_pf(net::Network; verbose=true)
     slack  = _slack_index(net, bidx)
 
     B, sus, _ = _build_B(net, bidx)
+    P_shift   = _phase_shift_injection(net, bidx)
 
     # Net active-power injections [MW]
     P = zeros(n)
@@ -119,8 +153,9 @@ function dc_pf(net::Network; verbose=true)
     for l in values(net.loads);      P[bidx[l.bus]] -= l.p_set;              end
 
     # Reduce system: remove slack row/column
+    # RHS = P_inj + P_shift  (phase-shift transformers add equivalent injections)
     ns    = [i for i in 1:n if i != slack]
-    θ_red = B[ns, ns] \ P[ns]
+    θ_red = B[ns, ns] \ (P[ns] .+ P_shift[ns])
     θ     = zeros(n); θ[ns] = θ_red
 
     # Active line flows  P_km = b_km · (θ_k − θ_m)
@@ -128,8 +163,22 @@ function dc_pf(net::Network; verbose=true)
     line_flows = [(name = l.name,
                    from = l.from_bus,
                    to   = l.to_bus,
-                   P_MW = (net.baseMVA / l.x) * (θ[bidx[l.from_bus]] - θ[bidx[l.to_bus]]))
+                   P_MW = (net.baseMVA / l.x) * (θ[bidx[l.from_bus]] - θ[bidx[l.to_bus]]),
+                   kind = :line)
                   for l in line_list]
+
+    # Transformer flows  P_km = b_eff · (θ_k − θ_m − φ)
+    trafo_list  = collect(values(net.transformers))
+    trafo_flows = [(name = tr.name,
+                    from = tr.from_bus,
+                    to   = tr.to_bus,
+                    P_MW = (net.baseMVA / (tr.x * tr.tap_ratio)) *
+                           (θ[bidx[tr.from_bus]] - θ[bidx[tr.to_bus]]
+                            - tr.phase_shift * π / 180),
+                    kind = :transformer)
+                   for tr in trafo_list]
+
+    all_flows = vcat(line_flows, trafo_flows)
 
     if verbose
         println("="^55)
@@ -140,16 +189,17 @@ function dc_pf(net::Network; verbose=true)
         for (i, b) in enumerate(bnames)
             @printf("  %-14s  %12.6f\n", b, θ[i])
         end
-        println("\n  Line flows:")
-        @printf("  %-14s  %12s\n", "Line", "P (MW)")
-        println("  " * "─"^29)
-        for lf in line_flows
-            @printf("  %-14s  %12.2f\n", lf.name, lf.P_MW)
+        println("\n  Branch active power flows:")
+        @printf("  %-16s  %-12s  %10s\n", "Branch", "Type", "P (MW)")
+        println("  " * "─"^42)
+        for f in all_flows
+            @printf("  %-16s  %-12s  %10.2f\n", f.name, string(f.kind), f.P_MW)
         end
         println("="^55)
     end
 
-    return (θ=θ, buses=bnames, line_flows=line_flows, B=B, P_inj=P, converged=true)
+    return (θ=θ, buses=bnames, line_flows=line_flows, trafo_flows=trafo_flows,
+            all_flows=all_flows, B=B, P_inj=P, converged=true)
 end
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -180,6 +230,7 @@ function linear_ac_pf(net::Network; verbose=true)
     slack  = _slack_index(net, bidx)
 
     G_mw, B_mw = _build_Y(net, bidx)
+    P_shift    = _phase_shift_injection(net, bidx)
 
     P = zeros(n); Q = zeros(n)
     for g in values(net.generators); P[bidx[g.bus]] += g.p_nom * g.p_max_pu; end
@@ -187,6 +238,7 @@ function linear_ac_pf(net::Network; verbose=true)
         P[bidx[l.bus]] -= l.p_set
         Q[bidx[l.bus]] -= l.q_set
     end
+    P .+= P_shift   # phase-shift equivalent injections (active power only)
 
     ns = [i for i in 1:n if i != slack]
     nm = n - 1
@@ -264,6 +316,7 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
     ref    = _slack_index(net, bidx)
 
     B, _, _ = _build_B(net, bidx)
+    P_shift   = _phase_shift_injection(net, bidx)
 
     P_load = zeros(n)
     for l in values(net.loads); P_load[bidx[l.bus]] += l.p_set; end
@@ -288,7 +341,8 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
         gen_inj = sum(P_gen[g] for g in disp_gens if bidx[g.bus] == k;
                       init = AffExpr(0.0))
         @constraint(model,
-            sum(B[k,m]*θ[m] for m in 1:n) == gen_inj + wind_inj[k] - P_load[k])
+            sum(B[k,m]*θ[m] for m in 1:n) ==
+            gen_inj + wind_inj[k] - P_load[k] + P_shift[k])
     end
 
     line_list = collect(values(net.lines))
@@ -299,6 +353,18 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
         b = net.baseMVA / l.x
         @constraint(model, b*(θ[f]-θ[t]) <=  lim)
         @constraint(model, b*(θ[f]-θ[t]) >= -lim)
+    end
+
+    # Transformer thermal limits with phase-shift correction:
+    #   |b_eff · (θ_f − θ_t − φ)| ≤ s_nom
+    for tr in values(net.transformers)
+        lim = isfinite(tr.s_nom) ? tr.s_nom : line_capacity
+        isfinite(lim) || continue
+        f     = bidx[tr.from_bus]; t = bidx[tr.to_bus]
+        b_eff = net.baseMVA / (tr.x * tr.tap_ratio)
+        φ     = tr.phase_shift * π / 180
+        @constraint(model, b_eff*(θ[f]-θ[t]-φ) <=  lim)
+        @constraint(model, b_eff*(θ[f]-θ[t]-φ) >= -lim)
     end
 
     @objective(model, Min, sum(g.marginal_cost * P_gen[g] for g in disp_gens))
@@ -376,6 +442,7 @@ function lopf_multiperiod(net::Network;
     ref    = _slack_index(net, bidx)
 
     B, _, _ = _build_B(net, bidx)
+    P_shift   = _phase_shift_injection(net, bidx)   # time-invariant
 
     P_load_base = zeros(n)
     for l in values(net.loads); P_load_base[bidx[l.bus]] += l.p_set; end
@@ -435,7 +502,7 @@ function lopf_multiperiod(net::Network;
 
             @constraint(model,
                 sum(B[k,m]*θ[m,t] for m in 1:n) ==
-                gen_inj + wind_inj + stor_net - P_load_base[k]*prof_t)
+                gen_inj + wind_inj + stor_net - P_load_base[k]*prof_t + P_shift[k])
         end
 
         for l in line_list
@@ -445,6 +512,17 @@ function lopf_multiperiod(net::Network;
             b = net.baseMVA / l.x
             @constraint(model, b*(θ[f,t]-θ[tt,t]) <=  lim)
             @constraint(model, b*(θ[f,t]-θ[tt,t]) >= -lim)
+        end
+
+        # Transformer thermal limits with phase-shift correction
+        for tr in values(net.transformers)
+            lim = isfinite(tr.s_nom) ? tr.s_nom : line_capacity
+            isfinite(lim) || continue
+            f     = bidx[tr.from_bus]; tt = bidx[tr.to_bus]
+            b_eff = net.baseMVA / (tr.x * tr.tap_ratio)
+            φ     = tr.phase_shift * π / 180
+            @constraint(model, b_eff*(θ[f,t]-θ[tt,t]-φ) <=  lim)
+            @constraint(model, b_eff*(θ[f,t]-θ[tt,t]-φ) >= -lim)
         end
     end
 
