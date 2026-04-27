@@ -1,0 +1,495 @@
+"""
+    dispatch.jl
+
+Network-aware solver dispatch via Julia multiple dispatch.
+Each function accepts a `Network` struct, extracts component data,
+and runs the corresponding power flow / optimisation algorithm.
+
+Solvers provided:
+  dc_pf(net)              — DC Power Flow
+  linear_ac_pf(net)       — Linearized AC Power Flow
+  lopf(net)               — Single-period Linear OPF
+  lopf_multiperiod(net)   — 24-hour LOPF with storage and wind
+"""
+
+include("network.jl")
+
+using LinearAlgebra
+using JuMP
+using HiGHS
+using Printf
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Default time-series profiles (24-hour, normalised)
+# ────────────────────────────────────────────────────────────────────────────
+
+const DEFAULT_LOAD_PROFILE = [
+    0.60, 0.57, 0.55, 0.54, 0.55, 0.60,   # 00-05  night
+    0.70, 0.80, 0.88, 0.90, 0.92, 0.91,   # 06-11  morning ramp
+    0.90, 0.89, 0.88, 0.87, 0.89, 0.95,   # 12-17  midday
+    1.00, 0.98, 0.93, 0.85, 0.75, 0.65    # 18-23  evening peak
+]
+
+const DEFAULT_WIND_PROFILE = [
+    0.80, 0.82, 0.85, 0.83, 0.78, 0.70,   # 00-05  strong night wind
+    0.60, 0.55, 0.50, 0.45, 0.42, 0.40,   # 06-11  morning drop
+    0.38, 0.37, 0.40, 0.43, 0.50, 0.58,   # 12-17  afternoon recovery
+    0.65, 0.70, 0.74, 0.76, 0.78, 0.80    # 18-23  evening wind
+]
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Shared internal helpers
+# ────────────────────────────────────────────────────────────────────────────
+
+# Build susceptance matrix B and per-branch susceptance vector.
+# Transformers are approximated as lines (tap ignored in DC formulation).
+function _build_B(net::Network, bidx::Dict{String,Int})
+    n   = length(bidx)
+    B   = zeros(n, n)
+    sus = Float64[]
+    branch_names = String[]
+
+    for l in values(net.lines)
+        f = bidx[l.from_bus]; t = bidx[l.to_bus]
+        b = net.baseMVA / l.x
+        push!(sus, b); push!(branch_names, l.name)
+        B[f,f]+=b; B[t,t]+=b; B[f,t]-=b; B[t,f]-=b
+    end
+    for tr in values(net.transformers)
+        f = bidx[tr.from_bus]; t = bidx[tr.to_bus]
+        b = net.baseMVA / tr.x
+        push!(sus, b); push!(branch_names, tr.name)
+        B[f,f]+=b; B[t,t]+=b; B[f,t]-=b; B[t,f]-=b
+    end
+    return B, sus, branch_names
+end
+
+# Build full nodal admittance matrix Y = G + jB from lines only.
+# (Used by linear_ac_pf; transformers require separate handling.)
+function _build_Y(net::Network, bidx::Dict{String,Int})
+    n = length(bidx)
+    G = zeros(n, n); B = zeros(n, n)
+    for l in values(net.lines)
+        f = bidx[l.from_bus]; t = bidx[l.to_bus]
+        d    = l.r^2 + l.x^2
+        g_ij = l.r / d; b_ij = l.x / d
+        G[f,f]+=g_ij; G[t,t]+=g_ij; G[f,t]-=g_ij; G[t,f]-=g_ij
+        B[f,f]+=b_ij; B[t,t]+=b_ij; B[f,t]-=b_ij; B[t,f]-=b_ij
+    end
+    return G .* net.baseMVA, B .* net.baseMVA  # scale to [MW/rad], [MW/p.u.-V]
+end
+
+function _slack_index(net::Network, bidx::Dict{String,Int})
+    sl = slack_buses(net)
+    isempty(sl) && error("Network \"$(net.name)\" has no slack bus")
+    return bidx[sl[1]]
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+#  DC Power Flow
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    dc_pf(net::Network; verbose=true) → NamedTuple
+
+DC Power Flow:  B·θ = P_inj,  solved via sparse LU factorisation.
+
+Generator active injections are taken as `p_nom × p_max_pu` (rated output).
+For a given dispatch, set `p_max_pu` accordingly before calling.
+
+Returns:
+  (θ, buses, line_flows, B, P_inj, converged)
+  where `line_flows` is a Vector of (name, from, to, P_MW).
+
+PyPSA equivalent: `network.lpf()`
+"""
+function dc_pf(net::Network; verbose=true)
+    isempty(net.buses) && error("Network has no buses")
+
+    bnames = bus_names(net)
+    bidx   = bus_index(net)
+    n      = length(bnames)
+    slack  = _slack_index(net, bidx)
+
+    B, sus, _ = _build_B(net, bidx)
+
+    # Net active-power injections [MW]
+    P = zeros(n)
+    for g in values(net.generators); P[bidx[g.bus]] += g.p_nom * g.p_max_pu; end
+    for l in values(net.loads);      P[bidx[l.bus]] -= l.p_set;              end
+
+    # Reduce system: remove slack row/column
+    ns    = [i for i in 1:n if i != slack]
+    θ_red = B[ns, ns] \ P[ns]
+    θ     = zeros(n); θ[ns] = θ_red
+
+    # Active line flows  P_km = b_km · (θ_k − θ_m)
+    line_list  = collect(values(net.lines))
+    line_flows = [(name = l.name,
+                   from = l.from_bus,
+                   to   = l.to_bus,
+                   P_MW = (net.baseMVA / l.x) * (θ[bidx[l.from_bus]] - θ[bidx[l.to_bus]]))
+                  for l in line_list]
+
+    if verbose
+        println("="^55)
+        println("DC POWER FLOW — $(net.name)")
+        println("="^55)
+        @printf("\n  %-14s  %12s\n", "Bus", "θ (rad)")
+        println("  " * "─"^29)
+        for (i, b) in enumerate(bnames)
+            @printf("  %-14s  %12.6f\n", b, θ[i])
+        end
+        println("\n  Line flows:")
+        @printf("  %-14s  %12s\n", "Line", "P (MW)")
+        println("  " * "─"^29)
+        for lf in line_flows
+            @printf("  %-14s  %12.2f\n", lf.name, lf.P_MW)
+        end
+        println("="^55)
+    end
+
+    return (θ=θ, buses=bnames, line_flows=line_flows, B=B, P_inj=P, converged=true)
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Linearized AC Power Flow
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    linear_ac_pf(net::Network; verbose=true) → NamedTuple
+
+Linearized AC Power Flow (LACPF).
+
+Solves the decoupled system linearised around flat start (|V|=1, θ=0):
+    [ B'  -G'] [Δθ ]   [P_inj / S_base]
+    [-G'  -B'] [Δ|V|] = [Q_inj / S_base]
+
+Generator reactive injection assumed zero (Q_gen = 0).
+Reactive loads taken from `load.q_set`.
+
+Returns:
+  (V_mag, V_ang, P_flow, Q_flow, buses, converged)
+
+PyPSA equivalent: `network.pf()` (linearised approximation)
+"""
+function linear_ac_pf(net::Network; verbose=true)
+    bnames = bus_names(net)
+    bidx   = bus_index(net)
+    n      = length(bnames)
+    slack  = _slack_index(net, bidx)
+
+    G_mw, B_mw = _build_Y(net, bidx)
+
+    P = zeros(n); Q = zeros(n)
+    for g in values(net.generators); P[bidx[g.bus]] += g.p_nom * g.p_max_pu; end
+    for l in values(net.loads)
+        P[bidx[l.bus]] -= l.p_set
+        Q[bidx[l.bus]] -= l.q_set
+    end
+
+    ns = [i for i in 1:n if i != slack]
+    nm = n - 1
+
+    B_r = B_mw[ns, ns]; G_r = G_mw[ns, ns]
+    A   = [B_r  -G_r;
+           -G_r  -B_r]
+    rhs = [P[ns]; Q[ns]]
+
+    x_sol = A \ rhs
+    Δθ_r  = x_sol[1:nm];   Δv_r = x_sol[nm+1:end]
+
+    θ   = zeros(n); θ[ns]   = Δθ_r
+    Δv  = zeros(n); Δv[ns]  = Δv_r
+    V_mag = 1.0 .+ Δv
+
+    line_list = collect(values(net.lines))
+    P_flow = Float64[]; Q_flow = Float64[]
+    for l in line_list
+        f = bidx[l.from_bus]; t = bidx[l.to_bus]
+        d    = l.r^2 + l.x^2
+        g_ij = l.r / d; b_ij = l.x / d
+        Δθ_ft = θ[f] - θ[t]; ΔV_ft = Δv[f] - Δv[t]
+        push!(P_flow, (b_ij*Δθ_ft + g_ij*ΔV_ft) * net.baseMVA)
+        push!(Q_flow, (b_ij*ΔV_ft - g_ij*Δθ_ft) * net.baseMVA)
+    end
+
+    if verbose
+        println("="^60)
+        println("LINEARIZED AC POWER FLOW — $(net.name)")
+        println("="^60)
+        @printf("\n  %-14s  %10s  %10s\n", "Bus", "|V| (p.u.)", "θ (rad)")
+        println("  " * "─"^38)
+        for (i, b) in enumerate(bnames)
+            @printf("  %-14s  %10.6f  %10.6f\n", b, V_mag[i], θ[i])
+        end
+        println("\n  Line flows:")
+        @printf("  %-14s  %10s  %10s\n", "Line", "P (MW)", "Q (MVAr)")
+        println("  " * "─"^38)
+        for (k, l) in enumerate(line_list)
+            @printf("  %-14s  %10.4f  %10.4f\n", l.name, P_flow[k], Q_flow[k])
+        end
+        println("="^60)
+    end
+
+    return (V_mag=V_mag, V_ang=θ, P_flow=P_flow, Q_flow=Q_flow,
+            buses=bnames, converged=true)
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Single-period Linear OPF
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    lopf(net::Network; line_capacity=Inf, verbose=true) → NamedTuple
+
+Linear Optimal Power Flow (LOPF):
+    min  Σᵢ cᵢ · Pᵢ
+    s.t. B·θ = P_inj          (nodal power balance)
+         |P_km| ≤ s_nom        (thermal limits, per-line or global)
+         p_min_pu·p_nom ≤ Pᵢ ≤ p_max_pu·p_nom
+
+Generators with carrier == "wind" are treated as fixed injection (zero cost).
+`line_capacity` is the global fallback when a line has s_nom = Inf.
+
+Returns:
+  (θ, P_gen, P_line, total_cost, converged, status)
+
+PyPSA equivalent: `network.optimize()`
+"""
+function lopf(net::Network; line_capacity=Inf, verbose=true)
+    bnames = bus_names(net)
+    bidx   = bus_index(net)
+    n      = length(bnames)
+    ref    = _slack_index(net, bidx)
+
+    B, _, _ = _build_B(net, bidx)
+
+    P_load = zeros(n)
+    for l in values(net.loads); P_load[bidx[l.bus]] += l.p_set; end
+
+    disp_gens = [g for g in values(net.generators) if g.carrier != "wind"]
+    wind_inj  = zeros(n)
+    for g in values(net.generators)
+        g.carrier == "wind" && (wind_inj[bidx[g.bus]] += g.p_nom * g.p_max_pu)
+    end
+    isempty(disp_gens) && error("No dispatchable generators in network")
+
+    model = Model(HiGHS.Optimizer); set_silent(model)
+
+    @variable(model, θ[1:n])
+    @variable(model, P_gen[g in disp_gens],
+              lower_bound = g.p_nom * g.p_min_pu,
+              upper_bound = g.p_nom * g.p_max_pu)
+
+    @constraint(model, θ[ref] == 0.0)
+
+    for k in 1:n
+        gen_inj = sum(P_gen[g] for g in disp_gens if bidx[g.bus] == k;
+                      init = AffExpr(0.0))
+        @constraint(model,
+            sum(B[k,m]*θ[m] for m in 1:n) == gen_inj + wind_inj[k] - P_load[k])
+    end
+
+    line_list = collect(values(net.lines))
+    for l in line_list
+        lim = isfinite(l.s_nom) ? l.s_nom : line_capacity
+        isfinite(lim) || continue
+        f = bidx[l.from_bus]; t = bidx[l.to_bus]
+        b = net.baseMVA / l.x
+        @constraint(model, b*(θ[f]-θ[t]) <=  lim)
+        @constraint(model, b*(θ[f]-θ[t]) >= -lim)
+    end
+
+    @objective(model, Min, sum(g.marginal_cost * P_gen[g] for g in disp_gens))
+
+    optimize!(model)
+    status    = termination_status(model)
+    converged = status ∈ (MOI.OPTIMAL, MOI.LOCALLY_SOLVED)
+    !converged && @warn "LOPF status: $status"
+
+    θ_val = value.(θ)
+    P_gen_val = Dict(g.name => value(P_gen[g]) for g in disp_gens)
+    P_line    = [(net.baseMVA / l.x) *
+                 (θ_val[bidx[l.from_bus]] - θ_val[bidx[l.to_bus]])
+                 for l in line_list]
+    total_cost = objective_value(model)
+
+    if verbose && converged
+        println("="^62)
+        println("LOPF — $(net.name)")
+        println("="^62)
+        println("\n  Generator dispatch:")
+        @printf("  %-16s  %8s  %10s  %12s\n",
+                "Generator", "P (MW)", "P_max (MW)", "Cost (€/MWh)")
+        println("  " * "─"^52)
+        for g in disp_gens
+            @printf("  %-16s  %8.2f  %10.2f  %12.2f\n",
+                    g.name, P_gen_val[g.name], g.p_nom*g.p_max_pu, g.marginal_cost)
+        end
+        println("\n  Line flows:")
+        @printf("  %-14s  %8s  %10s\n", "Line", "P (MW)", "Loading")
+        println("  " * "─"^36)
+        for (i, l) in enumerate(line_list)
+            lim = isfinite(l.s_nom) ? l.s_nom : (isfinite(line_capacity) ? line_capacity : Inf)
+            loading = isfinite(lim) ? @sprintf("%7.1f%%", abs(P_line[i])/lim*100) : "  —"
+            @printf("  %-14s  %8.2f  %10s\n", l.name, P_line[i], loading)
+        end
+        @printf("\n  Total cost: %.2f €/h\n", total_cost)
+        println("="^62)
+    end
+
+    return (θ=θ_val, P_gen=P_gen_val, P_line=P_line,
+            total_cost=total_cost, converged=converged, status=status)
+end
+
+# ────────────────────────────────────────────────────────────────────────────
+#  Multi-period LOPF with storage and wind
+# ────────────────────────────────────────────────────────────────────────────
+
+"""
+    lopf_multiperiod(net; T, load_profile, wind_profile, line_capacity, verbose)
+
+Multi-period LOPF over T time steps.
+
+Storage SoC dynamics per unit s at time t:
+    E(t) = E(t-1) + η_ch·P_ch(t) − P_dis(t)/η_dis
+
+Wind generators (carrier == "wind") output is bounded by:
+    P_wind(t) ≤ p_nom × wind_profile[t]   (zero marginal cost)
+
+Returns:
+  (gen_dispatch, soc, p_ch, p_dis, total_cost, status)
+  All dispatch dicts are indexed by component name.
+
+PyPSA equivalent: `network.optimize()` with multi-period snapshots
+"""
+function lopf_multiperiod(net::Network;
+                           T             = 24,
+                           load_profile  = DEFAULT_LOAD_PROFILE,
+                           wind_profile  = DEFAULT_WIND_PROFILE,
+                           line_capacity = Inf,
+                           verbose       = true)
+    bnames = bus_names(net)
+    bidx   = bus_index(net)
+    n      = length(bnames)
+    ref    = _slack_index(net, bidx)
+
+    B, _, _ = _build_B(net, bidx)
+
+    P_load_base = zeros(n)
+    for l in values(net.loads); P_load_base[bidx[l.bus]] += l.p_set; end
+
+    disp_gens  = [g for g in values(net.generators) if g.carrier != "wind"]
+    wind_gens  = [g for g in values(net.generators) if g.carrier == "wind"]
+    stor_units = collect(values(net.storage_units))
+
+    model = Model(HiGHS.Optimizer); set_silent(model)
+
+    # ── Variables ──────────────────────────────────────────────────
+    @variable(model, θ[1:n, 1:T])
+    @variable(model, P_gen[g in disp_gens, 1:T],
+              lower_bound = g.p_nom * g.p_min_pu,
+              upper_bound = g.p_nom * g.p_max_pu)
+
+    if !isempty(stor_units)
+        @variable(model, p_ch[s in stor_units, 1:T],
+                  lower_bound=0.0, upper_bound=s.p_nom)
+        @variable(model, p_dis[s in stor_units, 1:T],
+                  lower_bound=0.0, upper_bound=s.p_nom)
+        @variable(model, soc_var[s in stor_units, 0:T],
+                  lower_bound=0.0, upper_bound=s.e_nom)
+
+        for s in stor_units
+            e0 = s.e_initial > 0 ? s.e_initial : s.e_nom * 0.5
+            @constraint(model, soc_var[s, 0] == e0)
+            for t in 1:T
+                @constraint(model,
+                    soc_var[s,t] == soc_var[s,t-1]
+                                  + s.efficiency_charge    * p_ch[s,t]
+                                  - p_dis[s,t] / s.efficiency_discharge)
+            end
+            s.cyclic_state_of_charge &&
+                @constraint(model, soc_var[s,T] == soc_var[s,0])
+        end
+    end
+
+    # ── Per-period constraints ──────────────────────────────────────
+    line_list = collect(values(net.lines))
+    for t in 1:T
+        prof_t = load_profile[mod1(t, length(load_profile))]
+        wprf_t = wind_profile[mod1(t, length(wind_profile))]
+
+        @constraint(model, θ[ref, t] == 0.0)
+
+        for k in 1:n
+            gen_inj = sum(P_gen[g,t] for g in disp_gens if bidx[g.bus]==k;
+                          init=AffExpr(0.0))
+            wind_inj = sum(g.p_nom * wprf_t
+                           for g in wind_gens if bidx[g.bus]==k;
+                           init=0.0)
+            stor_net = isempty(stor_units) ? AffExpr(0.0) :
+                       sum(p_dis[s,t] - p_ch[s,t]
+                           for s in stor_units if bidx[s.bus]==k;
+                           init=AffExpr(0.0))
+
+            @constraint(model,
+                sum(B[k,m]*θ[m,t] for m in 1:n) ==
+                gen_inj + wind_inj + stor_net - P_load_base[k]*prof_t)
+        end
+
+        for l in line_list
+            lim = isfinite(l.s_nom) ? l.s_nom : line_capacity
+            isfinite(lim) || continue
+            f = bidx[l.from_bus]; tt = bidx[l.to_bus]
+            b = net.baseMVA / l.x
+            @constraint(model, b*(θ[f,t]-θ[tt,t]) <=  lim)
+            @constraint(model, b*(θ[f,t]-θ[tt,t]) >= -lim)
+        end
+    end
+
+    # ── Objective ──────────────────────────────────────────────────
+    @objective(model, Min,
+        sum(g.marginal_cost * P_gen[g,t] for g in disp_gens, t in 1:T))
+
+    optimize!(model)
+    status = termination_status(model)
+    status != MOI.OPTIMAL && @warn "Multi-period LOPF status: $status"
+
+    gen_dispatch = Dict(g.name => [value(P_gen[g,t]) for t in 1:T]
+                        for g in disp_gens)
+
+    soc_out  = isempty(stor_units) ? Dict{String,Vector{Float64}}() :
+               Dict(s.name => [value(soc_var[s,t]) for t in 0:T] for s in stor_units)
+    pch_out  = isempty(stor_units) ? Dict{String,Vector{Float64}}() :
+               Dict(s.name => [value(p_ch[s,t])    for t in 1:T] for s in stor_units)
+    pdis_out = isempty(stor_units) ? Dict{String,Vector{Float64}}() :
+               Dict(s.name => [value(p_dis[s,t])   for t in 1:T] for s in stor_units)
+
+    total_cost = objective_value(model)
+
+    if verbose
+        println("="^65)
+        println("MULTI-PERIOD LOPF ($(T)h) — $(net.name)")
+        println("="^65)
+        @printf("Total generation cost: %.2f €\n", total_cost)
+        println("\n  Generator summary:")
+        @printf("  %-16s  %8s  %8s  %8s\n", "Generator", "Avg MW", "Max MW", "Min MW")
+        println("  " * "─"^45)
+        for (name, vec) in gen_dispatch
+            @printf("  %-16s  %8.1f  %8.1f  %8.1f\n",
+                    name, sum(vec)/T, maximum(vec), minimum(vec))
+        end
+        if !isempty(soc_out)
+            println("\n  Storage SoC range [MWh]:")
+            for (name, vec) in soc_out
+                @printf("  %-16s  min=%6.1f  max=%6.1f\n",
+                        name, minimum(vec), maximum(vec))
+            end
+        end
+        println("="^65)
+    end
+
+    return (gen_dispatch=gen_dispatch, soc=soc_out, p_ch=pch_out, p_dis=pdis_out,
+            total_cost=total_cost, status=status)
+end
