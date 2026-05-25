@@ -12,7 +12,7 @@ Solvers provided:
   lopf_multiperiod(net)   — 24-hour LOPF with storage and wind
 """
 
-include("network.jl")
+@isdefined(Network) || include(joinpath(@__DIR__, "network.jl"))
 
 using LinearAlgebra
 using JuMP

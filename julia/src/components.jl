@@ -125,42 +125,65 @@ end
 #  Generator
 # ============================================================
 """
-    Generator(name, bus; p_nom, p_min_pu, p_max_pu, marginal_cost, carrier, committable)
+    Generator(name, bus; p_nom, p_min_pu, p_max_pu, marginal_cost, carrier,
+                         committable, min_up_time, min_down_time,
+                         startup_cost, shutdown_cost, initial_status)
 
 Synchronous or non-synchronous generator.
 Dispatch bounds: p_min_pu·p_nom ≤ P ≤ p_max_pu·p_nom.
 
+When committable=true the Unit Commitment solver adds binary on/off variables
+and enforces min up/down time and startup/shutdown costs.
+
 PyPSA equivalent: `network.generators`
-| Julia field    | PyPSA attribute  | Unit    |
-|----------------|------------------|---------|
-| p_nom          | p_nom            | MW      |
-| p_min_pu       | p_min_pu         | p.u.    |
-| p_max_pu       | p_max_pu         | p.u.    |
-| marginal_cost  | marginal_cost    | €/MWh   |
-| carrier        | carrier          | string  |
-| committable    | committable      | bool    |
+| Julia field    | PyPSA attribute       | Unit  |
+|----------------|-----------------------|-------|
+| p_nom          | p_nom                 | MW    |
+| p_min_pu       | p_min_pu              | p.u.  |
+| p_max_pu       | p_max_pu              | p.u.  |
+| marginal_cost  | marginal_cost         | €/MWh |
+| carrier        | carrier               | —     |
+| committable    | committable           | bool  |
+| min_up_time    | min_up_time           | h     |
+| min_down_time  | min_down_time         | h     |
+| startup_cost   | start_up_cost         | €     |
+| shutdown_cost  | shut_down_cost        | €     |
+| initial_status | initial_status        | bool  |
 """
 struct Generator
     name::String
     bus::String
     p_nom::Float64
-    p_min_pu::Float64    # fraction of p_nom (lower bound)
-    p_max_pu::Float64    # fraction of p_nom (upper bound)
-    marginal_cost::Float64  # €/MWh
-    carrier::String      # "gas", "coal", "wind", "solar", "hydro", ...
-    committable::Bool    # true → UC binary variable required
+    p_min_pu::Float64
+    p_max_pu::Float64
+    marginal_cost::Float64
+    carrier::String
+    committable::Bool
+    # Unit Commitment parameters (used only when committable = true)
+    min_up_time::Int        # minimum consecutive ON periods [h]
+    min_down_time::Int      # minimum consecutive OFF periods [h]
+    startup_cost::Float64   # fixed cost per startup event [€]
+    shutdown_cost::Float64  # fixed cost per shutdown event [€]
+    initial_status::Bool    # on=true / off=false at t=0
 end
 
 function Generator(name::String, bus::String;
-                   p_nom         = 0.0,
-                   p_min_pu      = 0.0,
-                   p_max_pu      = 1.0,
-                   marginal_cost = 0.0,
-                   carrier       = "gas",
-                   committable   = false)
+                   p_nom          = 0.0,
+                   p_min_pu       = 0.0,
+                   p_max_pu       = 1.0,
+                   marginal_cost  = 0.0,
+                   carrier        = "gas",
+                   committable    = false,
+                   min_up_time    = 1,
+                   min_down_time  = 1,
+                   startup_cost   = 0.0,
+                   shutdown_cost  = 0.0,
+                   initial_status = false)
     Generator(name, bus,
               Float64(p_nom), Float64(p_min_pu), Float64(p_max_pu),
-              Float64(marginal_cost), carrier, committable)
+              Float64(marginal_cost), carrier, committable,
+              Int(min_up_time), Int(min_down_time),
+              Float64(startup_cost), Float64(shutdown_cost), initial_status)
 end
 
 # ============================================================

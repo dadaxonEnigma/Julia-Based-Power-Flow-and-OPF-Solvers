@@ -5,7 +5,8 @@ Network container — analogue of `pypsa.Network`.
 Aggregates all component dictionaries and exposes `add_*!` mutating functions.
 """
 
-include("components.jl")
+# Guard: skip if already included (e.g. when loaded via PowerFlowJulia module)
+@isdefined(Bus) || include(joinpath(@__DIR__, "components.jl"))
 
 # ============================================================
 #  Network

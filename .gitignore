@@ -32,4 +32,5 @@ desktop.ini
 
 # Claude Code internals
 .claude/
+CLAUDE.md
 latex
