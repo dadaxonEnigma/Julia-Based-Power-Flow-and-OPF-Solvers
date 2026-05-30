@@ -99,7 +99,7 @@ function plot_lmp(result; title="Locational Marginal Prices (€/MWh)",
         mat = [lmp[b][t] for b in buses, t in 1:T]
         plt = heatmap(1:T, buses, mat;
                       title=title, xlabel="Period", ylabel="Bus",
-                      color=:RdYlGn_r, colorbar_title="€/MWh",
+                      color=cgrad(:RdYlGn, rev=true), colorbar_title="€/MWh",
                       size=(820, max(300, 55 * length(buses))),
                       titlefontsize=12, guidefontsize=10)
     else
