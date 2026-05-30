@@ -179,6 +179,83 @@ end
 @test "optimize returns lmp field"   (r=optimize(make_3bus(),verbose=false); @assert haskey(r,:lmp))
 @test "optimize returns total_cost"  (r=optimize(make_3bus(),verbose=false); @assert r.total_cost>0)
 
+# ── 10. ML Forecasting ───────────────────────────────────────────────────────
+println("\n[10] ML Forecasting (LSTM + Conformal Prediction)")
+@test "generate_synthetic_data shape" begin
+    d = generate_synthetic_data(30)
+    @assert size(d) == (30, 24)
+    @assert all(d .>= 0.0)
+end
+@test "train_forecaster returns LoadForecaster" begin
+    d  = generate_synthetic_data(60; seed=1)
+    fc = train_forecaster(d; hidden=8, epochs=5, verbose=false)
+    @assert fc isa LoadForecaster
+    @assert fc.horizon == 24 && fc.window == 24
+    @assert length(fc.cal_scores) > 0
+end
+@test "predict_scenarios returns correct shapes" begin
+    d    = generate_synthetic_data(60; seed=2)
+    fc   = train_forecaster(d; hidden=8, epochs=5, verbose=false)
+    hist = vec(d[end, :])
+    pred = predict_scenarios(fc, hist; n_scenarios=5)
+    @assert length(pred.mean)    == 24
+    @assert length(pred.lower)   == 24
+    @assert length(pred.upper)   == 24
+    @assert size(pred.scenarios) == (24, 5)
+end
+@test "conformal intervals: lower ≤ mean ≤ upper" begin
+    d    = generate_synthetic_data(60; seed=3)
+    fc   = train_forecaster(d; hidden=8, epochs=5, verbose=false)
+    pred = predict_scenarios(fc, vec(d[end, :]); n_scenarios=3)
+    @assert all(pred.lower .<= pred.mean .+ 1e-6)
+    @assert all(pred.mean  .<= pred.upper .+ 1e-6)
+end
+@test "forecast_metrics computes MAE/RMSE/MAPE" begin
+    m = forecast_metrics([1.0, 2.0, 3.0], [1.1, 2.1, 3.1])
+    @assert abs(m.mae - 0.1) < 1e-6
+    @assert m.rmse > 0 && m.mape > 0
+end
+
+# ── 11. Stochastic LOPF ──────────────────────────────────────────────────────
+println("\n[11] Stochastic LOPF (SAA)")
+@test "lopf_stochastic converges on 3-bus" begin
+    n3 = make_3bus()
+    d  = generate_synthetic_data(60; seed=4)
+    fc = train_forecaster(d; hidden=8, epochs=5, verbose=false)
+    pred = predict_scenarios(fc, vec(d[end, :]); n_scenarios=3)
+    r = lopf_stochastic(n3, pred.scenarios; T=24, verbose=false)
+    @assert r.expected_cost > 0
+    @assert r.n_feasible > 0
+    @assert r.cvar_90 >= r.expected_cost - 1.0
+end
+@test "stochastic cost ≥ 0 for all scenarios" begin
+    n3 = make_3bus()
+    d  = generate_synthetic_data(60; seed=5)
+    fc = train_forecaster(d; hidden=8, epochs=5, verbose=false)
+    pred = predict_scenarios(fc, vec(d[end, :]); n_scenarios=3)
+    r = lopf_stochastic(n3, pred.scenarios; T=24, verbose=false)
+    @assert all(r.costs .>= 0)
+end
+
+# ── 9. AC Power Flow ─────────────────────────────────────────────────────────
+println("\n[9] AC Power Flow (PowerModels.jl + Ipopt)")
+@test "pf(:ac) converges" begin
+    r = pf(make_3bus(), method=:ac, verbose=false)
+    @assert r.converged
+end
+@test "pf(:ac) slack voltage = 1 p.u." begin
+    r = pf(make_3bus(), method=:ac, verbose=false)
+    @assert abs(r.V_mag[1] - 1.0) < 0.01
+end
+@test "pf(:ac) returns Q_flow" begin
+    r = pf(make_3bus(), method=:ac, verbose=false)
+    @assert haskey(r, :Q_flow) && length(r.Q_flow) > 0
+end
+@test "pf(:ac) P_flow nonzero" begin
+    r = pf(make_3bus(), method=:ac, verbose=false)
+    @assert any(abs.(r.P_flow) .> 1e-6)
+end
+
 # ── Summary ───────────────────────────────────────────────────────────────
 total = passed + failed
 println("\n" * "=" ^ 60)
