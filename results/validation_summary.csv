@@ -1,0 +1,9 @@
+test_id,PASS,WARN,FAIL,OTHER,overall
+01_dc_pf,4,0,2,0,FAIL
+02_lopf_free,6,0,0,0,PASS
+03_lopf_cong,6,0,0,0,PASS
+04_lopf_trafo,6,0,1,0,FAIL
+05_lopf_link,6,0,0,0,PASS
+06_lopf_co2,4,0,0,0,PASS
+07_mp_storage,43,0,0,0,PASS
+08_uc,15,0,22,0,FAIL

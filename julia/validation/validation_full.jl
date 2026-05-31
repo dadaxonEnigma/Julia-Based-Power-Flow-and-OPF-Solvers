@@ -161,7 +161,8 @@ add!(net, "Carrier", "coal"; co2_emissions=0.34)
 add!(net, "Carrier", "gas";  co2_emissions=0.20)
 add!(net, "Generator", "Coal"; bus="B1", p_nom=300.0, marginal_cost=20.0, carrier="coal")
 add!(net, "Generator", "Gas";  bus="B1", p_nom=300.0, marginal_cost=50.0, carrier="gas")
-add!(net, "Load",  "D1"; bus="B1", p_set=400.0)
+add!(net, "Load",  "D1"; bus="B1", p_set=300.0)
+# cap=80t: all-coal=102t>80, all-gas=60t≤80 → mixed: Coal=142.86, Gas=157.14
 add!(net, "GlobalConstraint", "co2_cap";
      constant=80.0, sense="<=",
      carrier_weightings=Dict("coal"=>0.34, "gas"=>0.20))
