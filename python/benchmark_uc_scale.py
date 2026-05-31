@@ -119,7 +119,7 @@ def time_median(func, n_runs):
 
 # ── Benchmark ─────────────────────────────────────────────────────────────────
 T_FIXED = 24
-SIZES   = [3, 14, 30]
+SIZES   = [3, 14, 30, 40]
 
 print("=" * 70)
 print("BENCHMARK: Unit Commitment Scaling  (Python/PyPSA — linopy + HiGHS, T=24)")

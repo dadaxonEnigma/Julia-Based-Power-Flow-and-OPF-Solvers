@@ -184,7 +184,14 @@ function optimize(net::Network; method=:auto, T=1, kwargs...)
         return lopf_multiperiod(net; T=T, kwargs...)
     elseif method == :uc
         return unit_commitment(net; T=T, kwargs...)
+    elseif method == :stochastic
+        # Requires load_scenarios kwarg (T × S Matrix{Float64})
+        d = Dict{Symbol,Any}(kwargs)
+        haskey(d, :load_scenarios) ||
+            error("optimize(:stochastic): pass load_scenarios=<T×S matrix>")
+        load_scen = pop!(d, :load_scenarios)   # extract before splatting to avoid dup kwarg
+        return lopf_stochastic(net, load_scen; T=T, d...)
     else
-        error("optimize: unknown method '$method'. Use :lopf, :mp, :uc, or :auto")
+        error("optimize: unknown method '$method'. Use :lopf, :mp, :uc, :stochastic, or :auto")
     end
 end

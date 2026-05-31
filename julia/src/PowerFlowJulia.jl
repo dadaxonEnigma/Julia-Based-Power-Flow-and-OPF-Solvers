@@ -30,6 +30,8 @@ include("network.jl")
 include("dispatch.jl")
 include("unit_commitment.jl")
 include("ac_pf.jl")
+include("forecasting.jl")
+include("stochastic_lopf.jl")
 include("api.jl")
 include("visualization.jl")
 
@@ -63,5 +65,13 @@ export plot_dispatch, plot_lmp, plot_soc, plot_uc_schedule, plot_network
 
 # ── Default profiles ──────────────────────────────────────────────────────
 export DEFAULT_LOAD_PROFILE, DEFAULT_WIND_PROFILE
+
+# ── ML Forecasting (AI component) ─────────────────────────────────────────
+export LoadForecaster
+export generate_synthetic_data, train_forecaster, predict_scenarios
+export forecast_metrics
+
+# ── Stochastic LOPF ───────────────────────────────────────────────────────
+export lopf_stochastic, compare_deterministic_stochastic
 
 end # module PowerFlowJulia

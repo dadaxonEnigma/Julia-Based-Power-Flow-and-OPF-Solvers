@@ -104,7 +104,7 @@ println("=" ^ 70)
 println("n_buses  committable  continuous  T   Median(ms)   Min(ms)")
 println("-" ^ 70)
 
-SIZES   = [3, 14, 30]
+SIZES   = [3, 14, 30, 40]
 T_FIXED = 24
 results = Dict{Int,Float64}()
 
