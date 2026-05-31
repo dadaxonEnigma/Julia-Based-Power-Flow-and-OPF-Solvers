@@ -1,136 +1,44 @@
-# Julia-Based Power Flow and Optimal Power Flow Solvers
+# PowerFlowJulia
 
-**Master's Thesis — Innopolis University, 2026**
-
-> *Porting Key PyPSA Modules to Julia for Improved Power System Simulation Performance*
+**AI-Assisted Simulation and Optimization of Power Market Projects**
+Master's Thesis — Innopolis University, 2026
+Author: Dadakhon Turgunboev · Supervisor: Leonard Johard
 
 ---
 
-## Abstract
+## Overview
 
-This project implements and benchmarks five power system analysis modules in Julia, each paired with an equivalent PyPSA (Python) reference implementation. The work evaluates Julia's suitability as a high-performance replacement for Python-based power system toolchains, targeting the formulations used in PyPSA: DC Power Flow, AC Power Flow, Linearized AC Power Flow, Linear Optimal Power Flow (LOPF), and Multi-Period LOPF with storage and renewable generation.
+PowerFlowJulia is a Julia implementation of core power system simulation and optimization algorithms, reimplementing the key functionality of [PyPSA](https://pypsa.org/) with a PyPSA-compatible API. The library achieves **7×–750× speedups** over PyPSA across all solver methods and integrates an **LSTM-based load forecaster** with conformal prediction intervals for uncertainty-aware stochastic dispatch.
+
+---
+
+## Key Results
+
+| Method | Network size | Julia (ms) | PyPSA (ms) | Speedup |
+|---|---|---|---|---|
+| DC Power Flow | 500 buses | 10.6 | 811.8 | **77×** |
+| LOPF | 500 buses | 21.0 | 15,857 | **753×** |
+| AC Power Flow | 100 buses | 47.6 | 341.0 | **7×** |
+| Unit Commitment | 14 buses, T=24 | 63.3 | 2,066 | **33×** |
+| Multi-Period LOPF | T=24 | 6.4 | 1,485 | **188×** |
+
+**AI component:** LSTM load forecaster (MAPE 13.5%) reduces dispatch cost by **7.9%** vs naive profile. Stochastic LOPF provides CVaR₉₀ = 349,879 € for risk quantification.
 
 ---
 
 ## Implemented Methods
 
-| Method | Julia | Python (PyPSA) | Network |
-|---|---|---|---|
-| DC Power Flow (DCPF) | `julia/solvers/dc_power_flow.jl` | `python/dc_power_flow.py` | 3-bus |
-| AC Power Flow (ACPF) | `julia/solvers/ac_power_flow.jl` | `python/ac_power_flow.py` | 3-bus |
-| Linearized AC Power Flow (LACPF) | `julia/solvers/linear_ac_pf.jl` | `python/linear_ac_pf.py` | 3-bus |
-| Linear OPF (LOPF) | `julia/solvers/lopf.jl` | `python/lopf.py` | 3-bus |
-| Multi-Period LOPF | `julia/solvers/lopf_multiperiod.jl` | `python/lopf_multiperiod.py` | 3-bus |
-
-Validation against MATPOWER reference data is performed on the **IEEE 14-bus** test case (`julia/validation/ieee14_validation.jl`).
-
----
-
-## Methods
-
-### DC Power Flow (DCPF)
-
-The linearised (lossless) DC approximation neglects resistances and reactive power, reducing the power flow equations to a linear system:
-
-```
-B · θ = P_inj
-```
-
-where **B** is the susceptance matrix and **P_inj** is the vector of net active power injections. Solved via sparse LU factorisation.
-
-### AC Power Flow (ACPF)
-
-The full nonlinear AC power flow is formulated as a system of 2(n−1) equations in voltage magnitudes |V| and angles θ, solved by Newton–Raphson iteration. The Julia implementation uses [PowerModels.jl](https://github.com/lanl-ansi/PowerModels.jl) with the Ipopt interior-point solver.
-
-### Linearized AC Power Flow (LACPF)
-
-LACPF linearises the full AC power flow equations around the flat-start operating point (|V| = 1 p.u., θ = 0 rad) using a first-order Taylor expansion. Unlike DCPF, it simultaneously solves for both active and reactive power, recovering approximate voltage magnitudes:
-
-```
-[ B'  -G' ] [ Δθ  ]   [ P_inj / S_base ]
-[-G'  -B' ] [ Δ|V|] = [ Q_inj / S_base ]
-```
-
-where G' + jB' is the reduced nodal admittance matrix (slack bus eliminated).
-
-### Linear Optimal Power Flow (LOPF)
-
-Single-period economic dispatch subject to DC network constraints:
-
-```
-min  Σᵢ cᵢ · Pᵢ
-s.t. B · θ = P_inj           (nodal power balance)
-     |b_km · (θ_k − θ_m)| ≤ P_max   (line thermal limits)
-     0 ≤ Pᵢ ≤ Pᵢ_max               (generator capacity)
-```
-
-Julia: [JuMP.jl](https://jump.dev/) + [HiGHS](https://highs.dev/) LP solver.
-Python: `network.optimize()` via PyPSA (HiGHS backend).
-
-### Multi-Period LOPF with Storage and Wind
-
-Extends LOPF to a 24-hour horizon with time-coupled storage state-of-charge constraints, curtailable wind generation, and an hourly load profile:
-
-```
-min  Σ_t Σᵢ cᵢ · Pᵢ(t)
-s.t.  Power balance per bus per period
-      Generator capacity bounds
-      Line thermal limits
-      Storage SoC dynamics:  E(t+1) = E(t) + η_ch·P_ch(t) − P_dis(t)/η_dis
-      SoC bounds:  0 ≤ E(t) ≤ E_nom
-      Wind output:  P_wind(t) ≤ CF(t) · P_nom
-```
-
----
-
-## Validation
-
-### 3-Bus Test Network
-
-```
-G1 (cheap, 20 €/MWh)       G2 (expensive, 50 €/MWh)
-     [Bus 1] ──── Line 1-2 ──── [Bus 2]
-         \                          /
-       Line 1-3              Line 2-3
-               \              /
-              [Bus 3] (load 300 MW)
-```
-
-- Lines: x = 0.1 pu, r = 0.01 pu
-- Loads: Bus 2 = 200 MW, Bus 3 = 300 MW
-- Generators: G1 at Bus 1 (400 MW max), G2 at Bus 2 (300 MW max)
-
-**DC Power Flow — Julia vs PyPSA:**
-| Bus | Julia θ (rad) | PyPSA θ (rad) | |Δ| |
-|---|---|---|---|
-| Bus 0 | 0.000000 | 0.000000 | 0 |
-| Bus 1 | −0.000185 | −0.000185 | < 1×10⁻⁶ |
-| Bus 2 | −0.000162 | −0.000162 | < 1×10⁻⁶ |
-
-**AC Power Flow — Julia vs PyPSA:**
-| Metric | Julia | PyPSA | Max |Δ| |
-|---|---|---|---|
-| V_mag (p.u.) | 1.0 / 0.999982 / 0.999984 | same | 4.8×10⁻⁷ |
-| V_ang (rad) | 0.0 / −0.000185 / −0.000162 | same | 4.1×10⁻⁷ |
-| P_line (MW) | 266.67 / 233.34 / −33.33 | same | 3.5×10⁻³ |
-
-**LOPF — Scenario A (no congestion):**
-| | Julia | PyPSA |
+| Module | Description | Solver |
 |---|---|---|
-| G1 dispatch | 400.0 MW | 400.0 MW |
-| G2 dispatch | 100.0 MW | 100.0 MW |
-| Total cost | 13 000 €/h | 13 000 €/h |
-
-**LOPF — Scenario B (line limit 200 MW, congestion):**
-| | Julia | PyPSA |
-|---|---|---|
-| G1 dispatch | 300.0 MW | 300.0 MW |
-| G2 dispatch | 200.0 MW | 200.0 MW |
-| Total cost | 16 000 €/h (+23.1%) | 16 000 €/h (+23.1%) |
-
-### IEEE 14-Bus Validation
-
-The AC power flow and LOPF solvers are validated against the MATPOWER case14 reference solution (`data/case14.m`). Voltage magnitudes and angles are compared across all 14 buses; deviations are reported in `julia/validation/ieee14_validation.jl`.
+| DC Power Flow | Linearized lossless PF: **B·θ = P** | LAPACK |
+| Linearized AC PF | First-order Taylor expansion, recovers \|V\| and Q | LAPACK |
+| AC Power Flow | Full nonlinear Newton-Raphson via PowerModels.jl | Ipopt |
+| Single-period LOPF | Economic dispatch + DC network constraints | HiGHS LP |
+| Multi-period LOPF | 24h dispatch with storage SoC dynamics and wind | HiGHS LP |
+| Unit Commitment | MILP with binary on/off, min up/down time, startup costs | HiGHS MILP |
+| **LSTM Forecaster** | Sequence-to-sequence load forecast, window=24h → horizon=24h | Flux.jl |
+| **Conformal Prediction** | Distribution-free 90% coverage intervals | — |
+| **Stochastic LOPF** | Sample Average Approximation over S demand scenarios | HiGHS LP × S |
 
 ---
 
@@ -139,93 +47,177 @@ The AC power flow and LOPF solvers are validated against the MATPOWER case14 ref
 ```
 thesis/
 ├── julia/
-│   ├── solvers/
-│   │   ├── dc_power_flow.jl        # DC Power Flow (B·θ = P)
-│   │   ├── ac_power_flow.jl        # AC Power Flow (PowerModels.jl + Ipopt)
-│   │   ├── linear_ac_pf.jl         # Linearized AC PF (LACPF)
-│   │   ├── lopf.jl                 # Single-period LOPF (JuMP + HiGHS)
-│   │   └── lopf_multiperiod.jl     # 24-hour LOPF with storage and wind
+│   ├── src/
+│   │   ├── PowerFlowJulia.jl     ← main module entry point
+│   │   ├── components.jl         ← Bus, Line, Generator, Load, StorageUnit, ...
+│   │   ├── network.jl            ← Network container + add_*! functions
+│   │   ├── dispatch.jl           ← dc_pf, linear_ac_pf, lopf, lopf_multiperiod
+│   │   ├── unit_commitment.jl    ← UC (MILP)
+│   │   ├── ac_pf.jl              ← AC PF via PowerModels.jl + Ipopt
+│   │   ├── forecasting.jl        ← LSTM forecaster + conformal prediction
+│   │   ├── stochastic_lopf.jl    ← scenario-based SAA stochastic LOPF
+│   │   ├── api.jl                ← add!(), pf(), optimize() — PyPSA-compatible
+│   │   └── visualization.jl      ← plot_dispatch, plot_lmp, plot_soc, ...
+│   ├── examples/
+│   │   ├── quickstart.jl         ← 3-bus tutorial (mirrors PyPSA quickstart)
+│   │   ├── ml_forecast_demo.jl   ← full AI pipeline: LSTM → stochastic LOPF
+│   │   ├── unit_commitment_demo.jl
+│   │   └── visualization_demo.jl
 │   ├── benchmarks/
-│   │   ├── benchmark.jl            # DCPF + LOPF benchmark runner
-│   │   ├── benchmark_ac.jl         # ACPF benchmark runner
-│   │   ├── benchmark_multiperiod.jl# Multi-period LOPF benchmark runner
-│   │   └── plot_benchmarks.jl      # Benchmark result visualisation
-│   ├── validation/
-│   │   └── ieee14_validation.jl    # IEEE 14-bus validation vs MATPOWER
-│   └── visualization/
-│       ├── visualize_dcpf.jl
-│       └── visualize_results.jl
-├── python/
-│   ├── dc_power_flow.py            # DC PF (PyPSA lpf)
-│   ├── ac_power_flow.py            # AC PF (PyPSA pf)
-│   ├── linear_ac_pf.py             # Linearized AC PF (PyPSA)
-│   ├── lopf.py                     # Single-period LOPF (PyPSA optimize)
-│   ├── lopf_multiperiod.py         # Multi-period LOPF (PyPSA)
-│   ├── ieee14_validation.py        # IEEE 14-bus reference comparison
-│   ├── benchmark.py                # DCPF + LOPF benchmarks
-│   ├── benchmark_ac.py             # ACPF benchmarks
-│   ├── benchmark_multiperiod.py    # Multi-period LOPF benchmarks
-│   └── compare_benchmarks.py       # Cross-language performance comparison
+│   │   ├── benchmark.jl          ← DC PF + LOPF scaling
+│   │   ├── benchmark_ac.jl       ← AC PF scaling
+│   │   ├── benchmark_uc.jl       ← UC by horizon T
+│   │   ├── benchmark_uc_scale.jl ← UC by network size
+│   │   ├── benchmark_multiperiod.jl
+│   │   └── compare_all_methods.jl ← 6-panel Julia vs PyPSA figure
+│   ├── test/
+│   │   └── runtests.jl           ← 43 tests (36 core + 7 ML/stochastic)
+│   ├── validation/               ← IEEE 14-bus vs MATPOWER
+│   └── Project.toml
+├── python/                       ← PyPSA reference implementations + benchmarks
 ├── data/
-│   └── case14.m                    # IEEE 14-bus MATPOWER case
-├── results/                        # Generated benchmark outputs (CSV + PNG)
-└── tests/
-    └── test_julia.jl
+│   └── case14.m                  ← IEEE 14-bus MATPOWER case
+├── results/                      ← benchmark CSVs and PNG figures
+├── latex/                        ← Master's thesis (LaTeX)
+└── CHEATSHEET.md                 ← PyPSA vs Julia API quick reference
+```
+
+---
+
+## Quick Start
+
+```julia
+# Install dependencies
+# cd julia/ && julia -e 'using Pkg; Pkg.instantiate()'
+
+include("julia/src/PowerFlowJulia.jl")
+using .PowerFlowJulia
+
+# Build network
+net = Network(baseMVA=100.0)
+add!(net, "Bus",       "B1"; v_nom=380.0, slack=true)
+add!(net, "Bus",       "B2"; v_nom=380.0)
+add!(net, "Line",      "L12"; bus0="B1", bus1="B2", x=0.1, s_nom=200.0)
+add!(net, "Generator", "G1"; bus="B1", p_nom=400.0, marginal_cost=20.0)
+add!(net, "Generator", "G2"; bus="B2", p_nom=200.0, marginal_cost=50.0)
+add!(net, "Load",      "D1"; bus="B2", p_set=300.0)
+
+# Power flow
+r = pf(net)                          # DC power flow
+r = pf(net, method=:ac)              # Full AC power flow
+
+# Optimisation
+r = optimize(net)                    # single-period LOPF
+r = optimize(net, T=24)              # 24h multi-period LOPF
+r = optimize(net, method=:uc, T=24)  # unit commitment
+
+println("Cost: ", r.total_cost, " €")
+println("LMP B1: ", r.lmp["B1"], " €/MWh")
+```
+
+---
+
+## AI Pipeline
+
+```julia
+# 1. Generate / load historical load data
+data = generate_synthetic_data(365; noise_std=0.05, seed=42)
+
+# 2. Train LSTM forecaster with conformal calibration
+fc = train_forecaster(data; hidden=32, epochs=100, verbose=true)
+
+# 3. Predict next 24h: point forecast + 90% intervals + 7 scenarios
+pred = predict_scenarios(fc, data[end,:]; n_scenarios=7, α=0.10)
+# pred.mean      — LSTM point forecast
+# pred.lower/upper — conformal bounds (≥90% coverage guaranteed)
+# pred.scenarios — 24×7 matrix of sampled profiles
+
+# 4. Stochastic LOPF over scenarios
+r = optimize(net, method=:stochastic, T=24, load_scenarios=pred.scenarios)
+println("E[cost] = ", r.expected_cost, " €")
+println("CVaR90  = ", r.cvar_90, " €")
+```
+
+---
+
+## Running Tests
+
+```bash
+julia julia/test/runtests.jl
+# 43 / 43 passed  (~90 seconds, includes LSTM training)
+```
+
+## Running Benchmarks
+
+```bash
+# All 6 methods → results/benchmark_all_methods.png
+julia julia/benchmarks/compare_all_methods.jl
+
+# Full ML demo → results/plots/ml_*.png
+julia julia/examples/ml_forecast_demo.jl
 ```
 
 ---
 
 ## Requirements
 
-**Julia** (≥ 1.10):
-```julia
-using Pkg
-Pkg.add(["PowerModels", "Ipopt", "JuMP", "HiGHS", "Plots", "LinearAlgebra"])
+**Julia ≥ 1.10**
+
+```bash
+cd julia
+julia -e 'using Pkg; Pkg.instantiate()'
 ```
 
-**Python** (≥ 3.9):
+Packages: `JuMP`, `HiGHS`, `Ipopt`, `PowerModels`, `Flux`, `Plots`, `StatsPlots`, `CSV`, `DataFrames`
+
+**Python ≥ 3.9** (reference benchmarks only)
+
 ```bash
-pip install pypsa highspy
+pip install pypsa highspy pandas numpy
 ```
 
 ---
 
-## Running
+## Validation
 
-```bash
-# DC Power Flow
-julia julia/solvers/dc_power_flow.jl
-python python/dc_power_flow.py
-
-# AC Power Flow
-julia julia/solvers/ac_power_flow.jl
-python python/ac_power_flow.py
-
-# Linearized AC Power Flow
-julia julia/solvers/linear_ac_pf.jl
-python python/linear_ac_pf.py
-
-# Single-period LOPF
-julia julia/solvers/lopf.jl
-python python/lopf.py
-
-# Multi-period LOPF (24-hour, with storage and wind)
-julia julia/solvers/lopf_multiperiod.jl
-python python/lopf_multiperiod.py
-
-# IEEE 14-bus validation
-julia julia/validation/ieee14_validation.jl
-python python/ieee14_validation.py
-
-# Benchmarks
-julia julia/benchmarks/benchmark.jl
-julia julia/benchmarks/benchmark_ac.jl
-julia julia/benchmarks/benchmark_multiperiod.jl
-python python/compare_benchmarks.py
-```
+| Test case | Method | Julia vs reference | Max error |
+|---|---|---|---|
+| 3-bus | DC PF | vs PyPSA | < 10⁻¹⁰ rad |
+| 3-bus | LOPF | vs PyPSA | 0 € (exact) |
+| 3-bus | AC PF | vs PyPSA | < 5×10⁻⁷ p.u. |
+| IEEE 14-bus | AC PF | vs MATPOWER | 1.33×10⁻³ p.u. |
+| IEEE 14-bus | DC PF | vs PyPSA | identical |
+| IEEE 14-bus | LOPF | vs PyPSA | 0 € (exact) |
 
 ---
 
-## Performance Notes
+## PyPSA Compatibility
 
-Julia's performance advantages over Python/PyPSA in this context stem from three complementary factors. First, JIT compilation via LLVM produces native machine code on the first call, eliminating Python's interpreter overhead for subsequent runs. Second, type-stable Julia code enables aggressive compiler optimisations that are unavailable in dynamically typed Python. Third, multiple dispatch allows the JuMP modelling layer to specialise constraint and objective code paths at compile time, reducing solver interface overhead. These properties are particularly significant for iterative solvers (Newton–Raphson in ACPF) and large-scale LP problems (multi-period LOPF), where inner-loop costs dominate total runtime.
+All component and solver argument names match PyPSA where applicable:
+
+| PyPSA | PowerFlowJulia |
+|---|---|
+| `n = pypsa.Network()` | `net = Network()` |
+| `n.add("Bus", "B1", v_nom=380)` | `add!(net, "Bus", "B1"; v_nom=380.0)` |
+| `n.add("Generator", ..., committable=True)` | `add!(net, "Generator", ...; committable=true)` |
+| `n.pf()` | `pf(net)` |
+| `n.optimize()` | `optimize(net)` |
+| `n.generators_t.p["G1"]` | `result.P_gen["G1"]` |
+| `n.buses_t.marginal_price["B1"]` | `result.lmp["B1"]` |
+
+See [CHEATSHEET.md](CHEATSHEET.md) for the full API comparison.
+
+---
+
+## Not Implemented
+
+- Capacity expansion planning (`p_nom_extendable`)
+- Security-constrained OPF (N-1 contingency)
+- Sector coupling (heat, hydrogen, transport)
+- PyPSA netCDF/HDF5 data format reader
+
+---
+
+## License
+
+Academic use. Innopolis University, 2026.
