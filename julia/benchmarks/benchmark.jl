@@ -1,21 +1,39 @@
-using LinearAlgebra
-using SparseArrays
-using JuMP
-using HiGHS
+"""
+Benchmark: Julia — DC Power Flow & LOPF, via the PowerFlowJulia LIBRARY API.
+
+Benchmarks the *exported* `pf(net)` / `optimize(net)` entry points — exactly the
+API the thesis describes — NOT a hand-written kernel, so the Julia-vs-PyPSA
+comparison is apples-to-apples (both build a network through their public API
+and call their public solver, both LP via HiGHS).
+
+Statistics: each size is measured over SEEDS random topologies (identical to
+python/benchmark.py), with `runs_per_seed` timed solves each after a JIT
+warm-up. Reported: mean ± std and min over the pooled samples. The CSV keeps
+`time_ms` = mean for backward compatibility, plus `std_ms`, `min_ms`.
+"""
+
 using Random
 using Printf
 using Statistics
+using LinearAlgebra
 
+BLAS.set_num_threads(1)   # fair single-thread linear algebra (DC PF solve)
+
+include(joinpath(@__DIR__, "..", "src", "PowerFlowJulia.jl"))
+using .PowerFlowJulia
+
+const SEEDS = [1, 2, 3]
+
+# ── Network generator (identical to python/benchmark.py) ─────────────────────
 function generate_network(n_buses; seed=42)
     rng = MersenneTwister(seed)
 
-
     lines = Tuple{Int,Int,Float64}[]
     for i in 1:n_buses-1
-        x = 0.05 + rand(rng) * 0.45         
+        x = 0.05 + rand(rng) * 0.45
         push!(lines, (i, i+1, x))
     end
-    for _ in 1:max(1, n_buses ÷ 3)          
+    for _ in 1:max(1, n_buses ÷ 3)
         u = rand(rng, 1:n_buses-1)
         v = rand(rng, u+1:n_buses)
         x = 0.05 + rand(rng) * 0.45
@@ -41,132 +59,81 @@ function generate_network(n_buses; seed=42)
     return n_buses, lines, generators, loads
 end
 
-function dc_pf_solve(n_buses, lines, generators, loads; v_base=380.0)
-    B = zeros(n_buses, n_buses)
-    for (from, to, x) in lines
-        b = v_base^2 / x
-        B[from, from] += b;  B[to, to]   += b
-        B[from, to]   -= b;  B[to, from] -= b
+# ── Build a PowerFlowJulia Network from the generated topology ───────────────
+function build_network(n_buses, lines, generators, loads)
+    net = Network(baseMVA=100.0)
+    for b in 1:n_buses
+        add!(net, "Bus", "Bus$b"; v_nom=380.0, slack=(b == 1))
     end
-
-    P = zeros(n_buses)
-    for (bus, p) in generators;  P[bus] += p; end
-    for (bus, p) in loads;       P[bus] -= p; end
-
-    idx   = 2:n_buses
-    θ_red = B[idx, idx] \ P[idx]
-
-    θ = zeros(n_buses)
-    θ[idx] = θ_red
-    return θ
+    for (i, (f, t, x)) in enumerate(lines)
+        add!(net, "Line", "L$i"; bus0="Bus$f", bus1="Bus$t", x=x, r=0.01, s_nom=1e6)
+    end
+    for (bus, p_nom) in generators
+        add!(net, "Generator", "G$bus"; bus="Bus$bus", p_nom=p_nom, marginal_cost=20.0)
+    end
+    for (bus, p) in loads
+        add!(net, "Load", "D$bus"; bus="Bus$bus", p_set=p)
+    end
+    return net
 end
 
-function lopf_solve(n_buses, lines, generators, loads; baseMVA=100.0)
-    gen_buses = sort(collect(keys(generators)))
-    P_load    = zeros(n_buses)
-    for (bus, p) in loads; P_load[bus] = p; end
-
-    B = zeros(n_buses, n_buses)
-    sus = Float64[]
-    for (from, to, r, x) in lines        
-        b = baseMVA / x
-        push!(sus, b)
-        B[from, from] += b;  B[to, to]   += b
-        B[from, to]   -= b;  B[to, from] -= b
+# Collect timing samples over SEEDS × runs_per_seed; return mean/std/min (ms).
+function bench_stats(build, solve, runs_per_seed)
+    samples = Float64[]
+    for s in SEEDS
+        net = build(s)
+        solve(net)                              # JIT / warm-up
+        for _ in 1:runs_per_seed
+            push!(samples, @elapsed solve(net))
+        end
     end
-
-    model = Model(HiGHS.Optimizer)
-    set_silent(model)
-
-    @variable(model, θ[1:n_buses])
-    @variable(model, P_gen[bus in gen_buses],
-              lower_bound = 0.0,
-              upper_bound = generators[bus])
-
-    @constraint(model, θ[gen_buses[1]] == 0.0)
-    for k in 1:n_buses
-        P_inj = (k in gen_buses) ? P_gen[k] : 0.0
-        @constraint(model, sum(B[k,m]*θ[m] for m in 1:n_buses) == P_inj - P_load[k])
-    end
-
-    @objective(model, Min, sum(20.0 * P_gen[bus] for bus in gen_buses))
-    optimize!(model)
-    return objective_value(model)
+    n = length(samples)
+    return (mean = mean(samples) * 1000,
+            std  = (n > 1 ? std(samples) : 0.0) * 1000,
+            min  = minimum(samples) * 1000,
+            n    = n)
 end
 
+println("="^74)
+println("BENCHMARK: Julia (PowerFlowJulia API) — DC Power Flow & LOPF")
+println("Seeds: $SEEDS  |  mean ± std over pooled samples")
+println("="^74)
 
-function time_median(f, n_runs)
-    times = Float64[]
-    for _ in 1:n_runs
-        t = @elapsed f()
-        push!(times, t)
-    end
-    return median(times), minimum(times)
-end
+DC_SIZES   = [3, 10, 50, 100, 300]
+LOPF_SIZES = [3, 10, 50, 100, 300]
 
+println("\n[DC POWER FLOW]  pf(net; method=:dc)")
+println("-"^74)
+@printf("%-8s %12s %12s %12s %6s\n", "Buses", "Mean (ms)", "Std (ms)", "Min (ms)", "N")
+println("-"^74)
 
-println("="^70)
-println("BENCHMARK: Julia — DC Power Flow & LOPF")
-println("="^70)
-
-DC_SIZES   = [3, 10, 50, 100, 500, 1000, 2000]
-LOPF_SIZES = [3, 10, 50, 100, 500]
-
-println("\n📊 DC POWER FLOW BENCHMARK")
-println("-"^70)
-@printf("%-10s %12s %12s %10s\n", "Buses", "Median (ms)", "Min (ms)", "Lines")
-println("-"^70)
-
-dc_results = Dict{Int, Float64}()
-
+dc = Dict{Int,NamedTuple}()
 for n in DC_SIZES
-    n_buses, lines, generators, loads = generate_network(n, seed=42)
-
-    lines_dc = [(f, t, x) for (f, t, x) in lines]
-
-    dc_pf_solve(n_buses, lines_dc, generators, loads)
-
-    n_runs = n <= 100 ? 200 : (n <= 500 ? 50 : 10)
-    med, mn = time_median(n_runs) do
-        dc_pf_solve(n_buses, lines_dc, generators, loads)
-    end
-
-    dc_results[n] = med * 1000   # в мс
-    @printf("%-10d %12.4f %12.4f %10d\n", n, med*1000, mn*1000, length(lines))
+    runs = n <= 100 ? 10 : (n <= 500 ? 8 : (n <= 1000 ? 5 : 3))
+    st = bench_stats(s -> build_network(generate_network(n, seed=s)...),
+                     net -> pf(net; method=:dc, verbose=false), runs)
+    dc[n] = st
+    @printf("%-8d %12.4f %12.4f %12.4f %6d\n", n, st.mean, st.std, st.min, st.n)
 end
 
-println("\n📊 LOPF BENCHMARK  (LP: JuMP + HiGHS)")
-println("-"^70)
-@printf("%-10s %12s %12s %10s\n", "Buses", "Median (ms)", "Min (ms)", "Lines")
-println("-"^70)
+println("\n[LOPF]  optimize(net; method=:lopf)   (JuMP + HiGHS)")
+println("-"^74)
+@printf("%-8s %12s %12s %12s %6s\n", "Buses", "Mean (ms)", "Std (ms)", "Min (ms)", "N")
+println("-"^74)
 
-lopf_results = Dict{Int, Float64}()
-
+lp = Dict{Int,NamedTuple}()
 for n in LOPF_SIZES
-    n_buses, lines_raw, generators, loads = generate_network(n, seed=42)
-
-    lines_lopf = [(f, t, 0.01, x) for (f, t, x) in lines_raw]
-
-    lopf_solve(n_buses, lines_lopf, generators, loads)
-
-    n_runs = n <= 50 ? 20 : (n <= 100 ? 10 : 5)
-    med, mn = time_median(n_runs) do
-        lopf_solve(n_buses, lines_lopf, generators, loads)
-    end
-
-    lopf_results[n] = med * 1000
-    @printf("%-10d %12.3f %12.3f %10d\n", n, med*1000, mn*1000, length(lines_lopf))
+    runs = n <= 50 ? 10 : (n <= 100 ? 8 : 4)
+    st = bench_stats(s -> build_network(generate_network(n, seed=s)...),
+                     net -> optimize(net; method=:lopf, verbose=false), runs)
+    lp[n] = st
+    @printf("%-8d %12.4f %12.4f %12.4f %6d\n", n, st.mean, st.std, st.min, st.n)
 end
 
-open("results/julia_benchmark.csv", "w") do io
-    println(io, "module,n_buses,time_ms")
-    for n in DC_SIZES
-        println(io, "DC_PF,$n,$(dc_results[n])")
-    end
-    for n in LOPF_SIZES
-        println(io, "LOPF,$n,$(lopf_results[n])")
-    end
+open(joinpath(@__DIR__, "..", "..", "results", "julia_benchmark.csv"), "w") do io
+    println(io, "module,n_buses,time_ms,std_ms,min_ms,n_samples")
+    for n in DC_SIZES;   s=dc[n]; println(io, "DC_PF,$n,$(s.mean),$(s.std),$(s.min),$(s.n)"); end
+    for n in LOPF_SIZES; s=lp[n]; println(io, "LOPF,$n,$(s.mean),$(s.std),$(s.min),$(s.n)"); end
 end
 
-println("\n✓ Results saved to results/julia_benchmark.csv")
-println("\nRun python/benchmark.py to get Python times for comparison.")
+println("\n[OK] results/julia_benchmark.csv  |  run python/benchmark.py for PyPSA")

@@ -2,6 +2,9 @@
 Benchmark: Multi-Period LOPF — PyPSA (linopy + HiGHS)
 Same network and parameters as julia/benchmarks/benchmark_multiperiod.jl
 """
+import os
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ[_v] = "1"          # fair single-thread linear algebra (set before numpy)
 import numpy as np
 import pypsa
 import time
@@ -65,38 +68,42 @@ def build_network(T):
     return net
 
 
-def time_median(func, n_runs):
-    times = []
+def bench_stats(run, n_runs):
+    run()                                       # warm-up
+    samples = []
     for _ in range(n_runs):
         t0 = time.perf_counter()
-        func()
-        times.append(time.perf_counter() - t0)
-    return statistics.median(times), min(times)
+        run()
+        samples.append(time.perf_counter() - t0)
+    mean = statistics.mean(samples) * 1000
+    std = (statistics.stdev(samples) if len(samples) > 1 else 0.0) * 1000
+    return mean, std, min(samples) * 1000, len(samples)
 
 
-print("=" * 65)
+print("=" * 60)
 print("BENCHMARK: Multi-Period LOPF  (Python/PyPSA — linopy + HiGHS)")
-print("=" * 65)
-print(f"{'T (h)':<8} {'Median (ms)':>12} {'Min (ms)':>12} {'Vars':>8}")
-print("-" * 45)
+print("3 buses, storage, wind")
+print("=" * 60)
+print(f"{'T (h)':<8} {'Mean (ms)':>12} {'Std (ms)':>12} {'Min (ms)':>12} {'N':>6}")
+print("-" * 60)
 
-HORIZONS = [6, 12, 24, 48, 96]
+HORIZONS = [6, 12, 24, 48]
 mp_results = {}
 
 for T in HORIZONS:
-    net = build_network(T)
-    n_vars = T * 8  # approximate
+    net = build_network(T)                      # build once, time only the solve
+    def run_mp(net=net):
+        net.optimize(solver_name="highs", solver_options={"threads": 1})
 
-    n_runs = 20 if T <= 24 else (10 if T <= 48 else 5)
-    med, mn = time_median(lambda: net.optimize(solver_name="highs"), n_runs)
+    n_runs = 15 if T <= 24 else (10 if T <= 48 else 6)
+    mean, sd, mn, ns = bench_stats(run_mp, n_runs)
+    mp_results[T] = (mean, sd, mn, ns)
+    print(f"{T:<8} {mean:>12.3f} {sd:>12.3f} {mn:>12.3f} {ns:>6}")
 
-    mp_results[T] = med * 1000
-    print(f"{T:<8} {med*1000:>12.3f} {mn*1000:>12.3f} {n_vars:>8}")
-
-with open("../results/python_mp_benchmark.csv", "w", newline="") as f:
+with open("results/python_mp_benchmark.csv", "w", newline="") as f:
     writer = csv.writer(f)
-    writer.writerow(["module", "T", "time_ms"])
+    writer.writerow(["module", "T", "time_ms", "std_ms", "min_ms", "n_samples"])
     for T in HORIZONS:
-        writer.writerow(["MLOPF", T, mp_results[T]])
+        writer.writerow(["MLOPF", T, *mp_results[T]])
 
-print("\n[OK] Saved to results/python_mp_benchmark.csv")
+print("\n[OK] results/python_mp_benchmark.csv")

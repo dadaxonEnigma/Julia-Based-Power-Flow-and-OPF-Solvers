@@ -1,7 +1,14 @@
 """
-Benchmark: Python/PyPSA — DC Power Flow & LOPF
-Запускай рядом с julia/benchmark.jl для сравнения скоростей.
+Benchmark: Python/PyPSA — DC Power Flow & LOPF.
+Run alongside julia/benchmarks/benchmark.jl for comparison.
+
+Statistics: each size is measured over SEEDS random topologies (identical seeds
+and generator logic as the Julia side), runs_per_seed timed solves each after a
+warm-up. CSV: time_ms = mean, plus std_ms, min_ms, n_samples.
 """
+import os
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ[_v] = "1"          # fair single-thread linear algebra (set before numpy)
 import numpy as np
 import pypsa
 import time
@@ -10,23 +17,19 @@ import csv
 import warnings
 import logging
 
-# Убираем лишние предупреждения PyPSA из вывода
 warnings.filterwarnings("ignore")
 logging.disable(logging.CRITICAL)
 
+SEEDS = [1, 2, 3]
 
-# ----------------------------------------------------------------
-#  Генератор сети (та же логика, что и в julia/benchmark.jl)
-# ----------------------------------------------------------------
+
 def generate_network(n_buses, seed=42):
     rng = np.random.default_rng(seed)
 
     lines = []
-    # Spanning tree
     for i in range(1, n_buses):
         x = 0.05 + rng.random() * 0.45
         lines.append((i, i + 1, x))
-    # Дополнительные рёбра
     for _ in range(max(1, n_buses // 3)):
         u = int(rng.integers(1, n_buses))
         v = int(rng.integers(u + 1, n_buses + 1))
@@ -51,100 +54,89 @@ def generate_network(n_buses, seed=42):
     return n_buses, lines, generators, loads
 
 
-# ----------------------------------------------------------------
-#  Создание PyPSA Network из наших данных
-# ----------------------------------------------------------------
 def build_pypsa_network(n_buses, lines, generators, loads, line_capacity=1e6):
     n = pypsa.Network()
-
     for bus in range(1, n_buses + 1):
         n.add("Bus", f"Bus{bus}", v_nom=380.0)
-
     for idx, (f, t, x) in enumerate(lines):
         n.add("Line", f"L{idx}", bus0=f"Bus{f}", bus1=f"Bus{t}",
               x=x, r=0.01, s_nom=line_capacity)
-
     for bus, p_max in generators.items():
         ctrl = "Slack" if bus == 1 else "PQ"
         n.add("Generator", f"G{bus}", bus=f"Bus{bus}",
               p_nom=p_max, marginal_cost=20.0, control=ctrl)
-
     for bus, p in loads.items():
         n.add("Load", f"Load{bus}", bus=f"Bus{bus}", p_set=p)
-
     return n
 
 
-# ----------------------------------------------------------------
-#  Замер времени
-# ----------------------------------------------------------------
-def time_median(func, n_runs):
-    times = []
-    for _ in range(n_runs):
-        t0 = time.perf_counter()
-        func()
-        times.append(time.perf_counter() - t0)
-    return statistics.median(times), min(times)
+def bench_stats(run_factory, runs_per_seed):
+    """run_factory(seed) -> zero-arg callable. Pool samples over SEEDS × runs."""
+    samples = []
+    for s in SEEDS:
+        run = run_factory(s)
+        run()                                   # warm-up
+        for _ in range(runs_per_seed):
+            t0 = time.perf_counter()
+            run()
+            samples.append(time.perf_counter() - t0)
+    mean = statistics.mean(samples) * 1000
+    std = (statistics.stdev(samples) if len(samples) > 1 else 0.0) * 1000
+    return mean, std, min(samples) * 1000, len(samples)
 
 
-# ================================================================
-#  ОСНОВНОЙ БЕНЧМАРК
-# ================================================================
-print("=" * 70)
+print("=" * 74)
 print("BENCHMARK: Python/PyPSA — DC Power Flow & LOPF")
-print("=" * 70)
+print(f"Seeds: {SEEDS}  |  mean +/- std over pooled samples")
+print("=" * 74)
 
-DC_SIZES   = [3, 10, 50, 100, 500, 1000, 2000]
-LOPF_SIZES = [3, 10, 50, 100, 500]
+DC_SIZES   = [3, 10, 50, 100, 300]
+LOPF_SIZES = [3, 10, 50, 100, 300]
 
-dc_results   = {}
-lopf_results = {}
+print("\n[DC POWER FLOW]  net.lpf()")
+print("-" * 74)
+print(f"{'Buses':<8} {'Mean (ms)':>12} {'Std (ms)':>12} {'Min (ms)':>12} {'N':>6}")
+print("-" * 74)
 
-# ── DC Power Flow (lpf) ─────────────────────────────────────────
-print("\n[DC POWER FLOW BENCHMARK]")
-print("-" * 70)
-print(f"{'Buses':<10} {'Median (ms)':>12} {'Min (ms)':>12} {'Lines':>10}")
-print("-" * 70)
-
+dc_results = {}
 for n in DC_SIZES:
-    n_buses, lines, generators, loads = generate_network(n, seed=42)
-    net = build_pypsa_network(n_buses, lines, generators, loads)
+    runs = 10 if n <= 100 else (8 if n <= 500 else (5 if n <= 1000 else 3))
 
-    n_runs = 50 if n <= 100 else (10 if n <= 500 else 3)
-    med, mn = time_median(lambda: net.lpf(), n_runs)
+    def factory(s, n=n):
+        net = build_pypsa_network(*generate_network(n, seed=s))
+        return lambda: net.lpf()
 
-    dc_results[n] = med * 1000
-    print(f"{n:<10} {med*1000:>12.4f} {mn*1000:>12.4f} {len(lines):>10}")
+    mean, sd, mn, ns = bench_stats(factory, runs)
+    dc_results[n] = (mean, sd, mn, ns)
+    print(f"{n:<8} {mean:>12.4f} {sd:>12.4f} {mn:>12.4f} {ns:>6}")
 
-# ── LOPF (optimize) ─────────────────────────────────────────────
-print("\n[LOPF BENCHMARK  (linopy + HiGHS)]")
-print("-" * 70)
-print(f"{'Buses':<10} {'Median (ms)':>12} {'Min (ms)':>12} {'Lines':>10}")
-print("-" * 70)
+print("\n[LOPF]  net.optimize(solver='highs')")
+print("-" * 74)
+print(f"{'Buses':<8} {'Mean (ms)':>12} {'Std (ms)':>12} {'Min (ms)':>12} {'N':>6}")
+print("-" * 74)
 
+lopf_results = {}
 for n in LOPF_SIZES:
-    n_buses, lines, generators, loads = generate_network(n, seed=42)
-    # Для LOPF нужно пересоздавать Network на каждом запуске
-    # (иначе PyPSA меняет внутреннее состояние и время нечестное)
+    runs = 10 if n <= 50 else (8 if n <= 100 else 4)
 
-    def run_lopf():
-        net = build_pypsa_network(n_buses, lines, generators, loads)
-        net.optimize(solver_name="highs")
+    def factory(s, n=n):
+        # Build the network ONCE (outside the timed call), matching the Julia
+        # side, so the timing measures only optimisation-model assembly + solve,
+        # not PyPSA network construction. optimize() rebuilds the linopy model
+        # internally each call, just as Julia's solve() rebuilds the JuMP model.
+        net = build_pypsa_network(*generate_network(n, seed=s))
+        return lambda: net.optimize(solver_name="highs", solver_options={"threads": 1})
 
-    n_runs = 10 if n <= 50 else (5 if n <= 100 else 3)
-    med, mn = time_median(run_lopf, n_runs)
+    mean, sd, mn, ns = bench_stats(factory, runs)
+    lopf_results[n] = (mean, sd, mn, ns)
+    print(f"{n:<8} {mean:>12.4f} {sd:>12.4f} {mn:>12.4f} {ns:>6}")
 
-    lopf_results[n] = med * 1000
-    print(f"{n:<10} {med*1000:>12.3f} {mn*1000:>12.3f} {len(lines):>10}")
-
-# ── Сохраняем CSV ───────────────────────────────────────────────
 with open("results/python_benchmark.csv", "w", newline="") as f:
     writer = csv.writer(f)
-    writer.writerow(["module", "n_buses", "time_ms"])
+    writer.writerow(["module", "n_buses", "time_ms", "std_ms", "min_ms", "n_samples"])
     for n in DC_SIZES:
-        writer.writerow(["DC_PF", n, dc_results[n]])
+        writer.writerow(["DC_PF", n, *dc_results[n]])
     for n in LOPF_SIZES:
-        writer.writerow(["LOPF", n, lopf_results[n]])
+        writer.writerow(["LOPF", n, *lopf_results[n]])
 
-print("\n[OK] Results saved to results/python_benchmark.csv")
-print("Run julia/benchmark.jl to get Julia times for comparison.")
+print("\n[OK] results/python_benchmark.csv")

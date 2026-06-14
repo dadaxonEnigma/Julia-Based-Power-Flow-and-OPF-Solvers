@@ -332,6 +332,7 @@ function lopf(net::Network; line_capacity=Inf, verbose=true)
     store_units = collect(values(net.stores))
 
     model = Model(HiGHS.Optimizer); set_silent(model)
+    set_optimizer_attribute(model, "threads", 1)   # reproducible, fair single-thread timing
 
     @variable(model, θ[1:n])
     @variable(model, P_gen[g in disp_gens],
@@ -533,6 +534,7 @@ function lopf_multiperiod(net::Network;
     link_units  = collect(values(net.links))
 
     model = Model(HiGHS.Optimizer); set_silent(model)
+    set_optimizer_attribute(model, "threads", 1)   # reproducible, fair single-thread timing
 
     # ── Variables ──────────────────────────────────────────────────
     @variable(model, θ[1:n, 1:T])

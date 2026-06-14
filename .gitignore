@@ -30,7 +30,22 @@ desktop.ini
 *.log
 *.out
 
+# Large raw datasets (regenerate via julia/scripts/download_opsd.jl)
+data/raw/
+
 # Claude Code internals
 .claude/
 CLAUDE.md
-latex
+
+# LaTeX build artifacts (the .tex/.bib source IS tracked)
+latex/*.aux
+latex/*.bbl
+latex/*.bcf
+latex/*.blg
+latex/*.lof
+latex/*.lot
+latex/*.toc
+latex/*.run.xml
+latex/*.synctex.gz
+latex/*.fls
+latex/*.fdb_latexmk

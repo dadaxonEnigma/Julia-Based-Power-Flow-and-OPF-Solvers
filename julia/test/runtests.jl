@@ -190,13 +190,13 @@ end
     d  = generate_synthetic_data(60; seed=1)
     fc = train_forecaster(d; hidden=8, epochs=5, verbose=false)
     @assert fc isa LoadForecaster
-    @assert fc.horizon == 24 && fc.window == 24
+    @assert fc.horizon == 24 && fc.window == 168
     @assert length(fc.cal_scores) > 0
 end
 @test "predict_scenarios returns correct shapes" begin
     d    = generate_synthetic_data(60; seed=2)
     fc   = train_forecaster(d; hidden=8, epochs=5, verbose=false)
-    hist = vec(d[end, :])
+    hist = vec(d[end-6:end, :]')          # last 168 chronological hours
     pred = predict_scenarios(fc, hist; n_scenarios=5)
     @assert length(pred.mean)    == 24
     @assert length(pred.lower)   == 24
@@ -206,7 +206,7 @@ end
 @test "conformal intervals: lower ≤ mean ≤ upper" begin
     d    = generate_synthetic_data(60; seed=3)
     fc   = train_forecaster(d; hidden=8, epochs=5, verbose=false)
-    pred = predict_scenarios(fc, vec(d[end, :]); n_scenarios=3)
+    pred = predict_scenarios(fc, vec(d[end-6:end, :]'); n_scenarios=3)
     @assert all(pred.lower .<= pred.mean .+ 1e-6)
     @assert all(pred.mean  .<= pred.upper .+ 1e-6)
 end
@@ -222,7 +222,7 @@ println("\n[11] Stochastic LOPF (SAA)")
     n3 = make_3bus()
     d  = generate_synthetic_data(60; seed=4)
     fc = train_forecaster(d; hidden=8, epochs=5, verbose=false)
-    pred = predict_scenarios(fc, vec(d[end, :]); n_scenarios=3)
+    pred = predict_scenarios(fc, vec(d[end-6:end, :]'); n_scenarios=3)
     r = lopf_stochastic(n3, pred.scenarios; T=24, verbose=false)
     @assert r.expected_cost > 0
     @assert r.n_feasible > 0
@@ -232,7 +232,7 @@ end
     n3 = make_3bus()
     d  = generate_synthetic_data(60; seed=5)
     fc = train_forecaster(d; hidden=8, epochs=5, verbose=false)
-    pred = predict_scenarios(fc, vec(d[end, :]); n_scenarios=3)
+    pred = predict_scenarios(fc, vec(d[end-6:end, :]'); n_scenarios=3)
     r = lopf_stochastic(n3, pred.scenarios; T=24, verbose=false)
     @assert all(r.costs .>= 0)
 end

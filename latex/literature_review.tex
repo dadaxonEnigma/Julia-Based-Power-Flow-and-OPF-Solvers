@@ -1,0 +1,69 @@
+\chapter{Literature Review}
+\label{ch:litreview}
+
+This chapter surveys the body of work on which the thesis builds. It first examines PyPSA and the structure of its modeling layer, which is the reference framework and the source of the performance limitation under study. It then reviews the Julia scientific-computing and mathematical-optimization ecosystem and the existing Julia tools for power-system analysis, distinguishing what each provides from what this thesis sets out to deliver. The final sections cover the data-driven components: short-term load forecasting, conformal prediction for distribution-free uncertainty quantification, and stochastic optimization for power systems. The chapter closes by stating the research gap that motivates the work.
+
+\section{Power System Analysis and the PyPSA Framework}
+
+Optimal power flow and economic dispatch are long-standing problems in power systems engineering, with formulations that date back several decades \cite{wood2013powergeneration,kundur1994power}. The DC power flow approximation, in which the nonlinear AC equations are linearized around a flat voltage profile, has been the workhorse for market and planning studies since its formalization \cite{stott1974dc}, because it reduces the network model to a sparse linear system while retaining the active-power flow behavior that dominates dispatch economics. The locational marginal price (LMP), which assigns a distinct energy price to each network node according to the dual of the nodal balance constraint, formalizes the economic interpretation of congestion and underpins modern electricity markets \cite{oneill2005,schweppe1988}.
+
+PyPSA (Python for Power System Analysis) \cite{brown2018pypsa} has become the dominant open-source framework for this class of problems in the research community. It provides a high-level, component-oriented data model --- buses, lines, generators, loads, storage units, and links --- and assembles linear and mixed-integer optimization problems over user-defined time series. PyPSA is the engine behind continental-scale models such as PyPSA-Eur \cite{horsch2018pypsa_eur} and the global PyPSA-Earth \cite{parzen2023pypsaearth}, and it has supported a large volume of published energy-system research.
+
+The framework's design also exposes a performance trade-off relevant to this thesis. PyPSA constructs its optimization problems in Python, building constraints through the pandas data-handling stack and the linopy algebraic-modeling layer \cite{hofmann2023linopy} before handing the assembled problem to a numerical solver such as HiGHS \cite{huangfu2018highs} for linear and mixed-integer programs, or Ipopt \cite{wachter2006ipopt} for nonlinear ones. For small problems this construction cost is negligible, but as the number of buses, snapshots, and scenarios grows, the time spent assembling the model in interpreted Python can come to dominate the wall-clock runtime, independently of the solver. This observation --- that the modeling layer, not the solver, is the recoverable cost --- frames the performance question of the present work.
+
+\section{Julia for Scientific Computing and Optimization}
+
+Julia \cite{bezanson2017julia} was designed to resolve the ``two-language problem'', in which a high-level language is used for prototyping and a low-level one for performance. Through type inference, multiple dispatch, and just-in-time compilation to native code via LLVM, Julia attains performance close to C while retaining a dynamic, high-level syntax. For the present work, the decisive feature is that performance-critical inner loops --- such as the assembly of an optimization model from a component list --- compile to specialized native code rather than being interpreted.
+
+The JuMP modeling framework \cite{dunning2017jump,lubin2023jump} is the central piece of the Julia optimization ecosystem. JuMP provides an algebraic modeling language embedded in Julia and a solver-independent interface to a wide range of linear, mixed-integer, and nonlinear solvers, including the same HiGHS and Ipopt backends that PyPSA uses. Because JuMP compiles the model-building step, it has been reported to assemble large optimization problems substantially faster than interpreted Python modeling layers, which is precisely the cost component that limits PyPSA at scale. JuMP therefore makes it possible to reimplement PyPSA's modeling layer in a compiled setting while keeping the numerical solver --- and hence the achieved optimum --- identical, isolating the language-level contribution to performance.
+
+\section{Existing Julia Tools for Power System Analysis}
+
+Several projects have addressed power-system computation in Julia, but none combines an actively maintained, self-contained implementation with a PyPSA-compatible interface. This section reviews the most relevant ones.
+
+\textbf{PSA.jl} \cite{psajl2021} is the closest existing attempt at a direct PyPSA port to Julia. Developed as a companion to PyPSA, it implements a subset of the LOPF functionality using JuMP and HiGHS. However, PSA.jl is not self-contained: the network must first be constructed in Python with PyPSA, serialized to CSV files, and only then imported into Julia for solving. This workflow preserves Python as an unavoidable dependency and therefore forfeits a substantial part of the potential performance benefit. The project has moreover been unmaintained since early 2021 and is incompatible with current Julia and JuMP releases, which renders it practically unusable for new work.
+
+\textbf{EnergyModels.jl} \cite{energymodelsjl2019} was conceived as a more ambitious successor that would rewrite PyPSA's full optimization core natively in Julia, motivated by the same performance arguments pursued here. The project was nevertheless abandoned around 2019 without reaching a usable state, and no active development has followed.
+
+\textbf{PowerModels.jl} \cite{coffrin2018powermodels}, developed at Los Alamos National Laboratory, is a mature and actively maintained Julia package for steady-state power-network optimization. It provides a rigorous framework for AC and DC optimal power flow formulations and supports many solvers through JuMP. PowerModels.jl is the most technically complete tool in the Julia power-systems ecosystem, and the present thesis uses it as the solver backend for the full AC power flow module. It does not, however, replicate PyPSA's higher-level abstractions: it offers no direct equivalent of PyPSA's economic-dispatch interface, multi-carrier energy model, time-series optimization, storage dispatch, or capacity planning.
+
+\textbf{PowerSimulations.jl} \cite{lara2021powersimulations}, developed at the National Renewable Energy Laboratory, provides production-cost modeling and economic dispatch in Julia on top of the PowerSystems.jl data model. It is actively maintained and covers part of the optimization functionality present in PyPSA. It constitutes, however, an independent architecture rather than a PyPSA port: its component abstractions, data model, and API differ substantially from PyPSA's, so it cannot serve as a drop-in replacement for existing PyPSA-based workflows.
+
+\begin{table}[h]
+\centering
+\caption{Comparison of Julia-based power system frameworks with respect to this thesis}
+\label{tab:related_work}
+\begin{tabular}{l l l c c}
+\toprule
+\textbf{Project} & \textbf{Status} & \textbf{PyPSA API} & \textbf{Self-contained} & \textbf{Multi-period} \\
+\midrule
+PSA.jl              & Abandoned (2021) & Partial & No  & No  \\
+EnergyModels.jl     & Abandoned (2019) & Partial & No  & No  \\
+PowerModels.jl      & Active           & No      & Yes & No  \\
+PowerSimulations.jl & Active           & No      & Yes & Yes \\
+\textbf{This thesis}  & \textbf{Active}  & \textbf{Partial} & \textbf{Yes} & \textbf{Partial} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The survey shows that the two projects that most directly attempted a PyPSA port (PSA.jl, EnergyModels.jl) have been abandoned for several years, while the two active alternatives (PowerModels.jl, PowerSimulations.jl) follow independent architectures and offer no PyPSA-compatible interface. No actively maintained, self-contained Julia reimplementation of PyPSA's core algorithms currently exists.
+
+\section{Short-Term Load Forecasting}
+
+Short-term load forecasting is a mature field with a literature spanning statistical, machine-learning, and, more recently, probabilistic approaches \cite{hong2016probabilistic}. Classical baselines remain strong and are the honest reference against which any learned model must be judged. Two are used throughout this thesis: the persistence forecast, which predicts that tomorrow equals today, and the seasonal-naive forecast, which predicts that a given hour equals the same hour one week earlier, thereby capturing the dominant weekly cycle of electricity demand at no modeling cost.
+
+Among learned models, recurrent neural networks --- and in particular the Long Short-Term Memory (LSTM) architecture \cite{hochreiter1997lstm} --- are widely applied to load forecasting because their gated memory can in principle capture the daily and weekly periodicities of demand. Other model families are also common; gradient-boosted decision trees, popularized by the XGBoost implementation \cite{chen2016xgboost}, are a strong baseline for tabular forecasting on engineered calendar and lag features and are noted here as an alternative direction. This thesis adopts an LSTM as its forecaster and evaluates it against the naive baselines. The probabilistic-forecasting literature further argues that, for operational decision-making, a calibrated description of forecast uncertainty is often more valuable than a marginal improvement in point accuracy \cite{hong2016probabilistic}, a position that directly motivates the uncertainty-quantification component below.
+
+\section{Conformal Prediction}
+
+Conformal prediction provides prediction intervals with a finite-sample, distribution-free coverage guarantee: under the sole assumption that the data are exchangeable, the constructed interval contains the true value with at least a user-specified probability, regardless of the underlying forecasting model or the data distribution \cite{vovk2005algorithmic,angelopoulos2022conformal}. The split (inductive) variant computes non-conformity scores on a held-out calibration set and uses an appropriate empirical quantile of those scores to size the interval. This model-agnostic property is attractive for the present work because it allows the same calibration procedure to be applied to the forecaster, yielding guaranteed-coverage intervals that can be propagated into the dispatch optimization. It also separates the concern of point accuracy from the concern of coverage, which is consistent with the probabilistic-forecasting argument made above.
+
+\section{Stochastic Optimization in Power Systems}
+
+When demand is uncertain, a dispatch optimized for a single point forecast is generally suboptimal once the realized demand deviates from it. Stochastic programming addresses this by optimizing over a set of scenarios rather than a single realization. The Sample Average Approximation (SAA) method \cite{shapiro2021saa} approximates the expected-cost objective by an empirical average over a finite scenario sample, with the approximation improving as the number of scenarios grows; it is a standard and theoretically grounded approach for two-stage stochastic problems such as scenario-based dispatch.
+
+Optimizing expected cost alone, however, ignores tail risk. The Conditional Value-at-Risk (CVaR) \cite{rockafellar2000cvar} measures the expected cost in the worst fraction of scenarios and is a coherent risk measure with a convex, optimization-friendly representation. Reporting CVaR alongside the expected cost characterizes both the average and the adverse-case behavior of a dispatch schedule under demand uncertainty --- information that a deterministic formulation cannot provide. This thesis combines conformal-calibrated demand scenarios with an SAA stochastic LOPF and reports both expected cost and CVaR.
+
+\section{Research Gap}
+
+The reviewed literature reveals a two-part gap. First, on the computational side, no actively maintained, self-contained Julia reimplementation of PyPSA's core modules exists: prior ports either retained Python in the workflow or were abandoned, and the active Julia tools follow non-PyPSA architectures. The extent to which PyPSA's runtime is recoverable by replacing only the modeling layer --- while keeping the numerical solver fixed --- has not been quantified with a reproducible, multi-seed protocol. Second, on the data-driven side, while load forecasting, conformal prediction, and stochastic dispatch are individually well studied, their integration into a single native framework --- in which a conformally calibrated forecast supplies the scenarios for a risk-aware stochastic dispatch --- remains largely unaddressed. The present thesis targets both parts of this gap: a validated, self-contained, PyPSA-compatible Julia implementation with a reproducible performance comparison, extended by an AI-assisted layer that couples calibrated forecasting with stochastic, risk-aware optimization.

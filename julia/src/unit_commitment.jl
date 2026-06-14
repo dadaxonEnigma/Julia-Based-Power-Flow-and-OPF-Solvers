@@ -57,6 +57,7 @@ function unit_commitment(net::Network;
     # ── MILP model ───────────────────────────────────────────────────────────
     model = Model(HiGHS.Optimizer)
     set_silent(model)
+    set_optimizer_attribute(model, "threads", 1)   # reproducible, fair single-thread timing
 
     @variable(model, P_cont[g in cont_gens, 1:T],
               lower_bound = g.p_nom * g.p_min_pu,
@@ -212,6 +213,7 @@ function unit_commitment(net::Network;
     if compute_lmp && status ∈ (MOI.OPTIMAL, MOI.LOCALLY_SOLVED)
         lp = Model(HiGHS.Optimizer)
         set_silent(lp)
+        set_optimizer_attribute(lp, "threads", 1)
 
         @variable(lp, Pc[g in cont_gens, 1:T],
                   lower_bound = g.p_nom * g.p_min_pu,

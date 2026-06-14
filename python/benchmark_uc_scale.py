@@ -5,6 +5,9 @@ Same deterministic network generator as julia/benchmarks/benchmark_uc_scale.jl.
 
 Compare with julia/benchmarks/benchmark_uc_scale.jl.
 """
+import os
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ[_v] = "1"          # fair single-thread linear algebra (set before numpy)
 import csv
 import time
 import statistics
@@ -108,44 +111,51 @@ def build_pypsa(n_buses, T, seed=42):
     return net
 
 
-def time_median(func, n_runs):
-    times = []
-    for _ in range(n_runs):
-        t0 = time.perf_counter()
-        func()
-        times.append(time.perf_counter() - t0)
-    return statistics.median(times), min(times)
+SEEDS = [1, 2, 3]
+
+
+def bench_stats(run_factory, runs_per_seed):
+    samples = []
+    for s in SEEDS:
+        run = run_factory(s)
+        run()                                   # warm-up
+        for _ in range(runs_per_seed):
+            t0 = time.perf_counter()
+            run()
+            samples.append(time.perf_counter() - t0)
+    mean = statistics.mean(samples) * 1000
+    std = (statistics.stdev(samples) if len(samples) > 1 else 0.0) * 1000
+    return mean, std, min(samples) * 1000, len(samples)
 
 
 # ── Benchmark ─────────────────────────────────────────────────────────────────
 T_FIXED = 24
-SIZES   = [3, 14, 30, 40]
+SIZES   = [3, 14, 30]
 
-print("=" * 70)
+print("=" * 74)
 print("BENCHMARK: Unit Commitment Scaling  (Python/PyPSA — linopy + HiGHS, T=24)")
-print("=" * 70)
-print(f"{'n_buses':<8}  {'T':<4}  {'Median (ms)':>12}  {'Min (ms)':>12}")
-print("-" * 70)
+print(f"Seeds: {SEEDS}")
+print("=" * 74)
+print(f"{'Buses':<8} {'Mean (ms)':>12} {'Std (ms)':>12} {'Min (ms)':>12} {'N':>6}")
+print("-" * 74)
 
 uc_results = {}
-
 for n in SIZES:
-    def run_uc(n=n):
-        net = build_pypsa(n, T_FIXED)
-        net.optimize(solver_name="highs")
+    runs = 8 if n <= 14 else 5
 
-    n_runs = 10 if n <= 10 else 5
-    med, mn = time_median(run_uc, n_runs)
+    def factory(s, n=n):
+        net = build_pypsa(n, T_FIXED, seed=s)   # build once, time only the solve
+        return lambda: net.optimize(solver_name="highs", solver_options={"threads": 1})
 
-    uc_results[n] = med * 1000
-    print(f"{n:<8}  {T_FIXED:<4}  {med*1000:>12.3f}  {mn*1000:>12.3f}")
+    mean, sd, mn, ns = bench_stats(factory, runs)
+    uc_results[n] = (mean, sd, mn, ns)
+    print(f"{n:<8} {mean:>12.3f} {sd:>12.3f} {mn:>12.3f} {ns:>6}")
 
 # ── Save CSV ───────────────────────────────────────────────────────────────────
-with open("../results/python_uc_scale.csv", "w", newline="") as f:
+with open("results/python_uc_scale.csv", "w", newline="") as f:
     writer = csv.writer(f)
-    writer.writerow(["module", "n_buses", "T", "time_ms"])
+    writer.writerow(["module", "n_buses", "T", "time_ms", "std_ms", "min_ms", "n_samples"])
     for n in SIZES:
-        writer.writerow(["UC", n, T_FIXED, uc_results[n]])
+        writer.writerow(["UC", n, T_FIXED, *uc_results[n]])
 
-print("\n[OK] Saved to results/python_uc_scale.csv")
-print("Run julia/benchmarks/benchmark_uc_scale.jl for Julia comparison.")
+print("\n[OK] results/python_uc_scale.csv")

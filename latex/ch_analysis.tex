@@ -1,0 +1,56 @@
+\chapter{Analysis and Discussion}
+\label{sec:analysis}
+
+This chapter interprets the experimental results of Chapter~\ref{ch:implementation}: why the measured speedups behave as they do across methods and problem sizes, where the Julia implementation does and does not win, and the practical lessons from the port.
+
+
+\subsection{Why DC PF Speedup Decreases with Network Size}
+
+For small networks (3--10 buses), the Julia speedup is enormous ($\sim$$2$--$6\times10^{4}$) because:
+\begin{itemize}
+    \item PyPSA's \texttt{lpf()} carries a fixed Python overhead of approximately $120\,\text{ms}$ (DataFrame validation, network state management, pandas operations) regardless of network size.
+    \item Julia's DC PF for a 3-bus network completes in $< 0.01\,\text{ms}$ --- effectively instantaneous.
+    \item The speedup is dominated by the fixed overhead: $\text{speedup} \approx 120\,\text{ms} / t_\text{Julia}$.
+\end{itemize}
+
+These small-network ratios must therefore \emph{not} be read as compute superiority. As the network grows, the sparse linear solve comes to dominate both sides and the ratio collapses toward the true compute-bound figure: $169\times$ at 300 synthetic buses and only $4.7\times$ on the 2{,}869-bus PEGASE network. The honest headline for DC power flow is therefore a low single-digit speedup at scale, not the headline ratio.
+
+\subsection{Why the LOPF Speedup Stays Large at Scale}
+
+Unlike DC power flow, the LOPF speedup does not collapse: it declines only gently with size ($283\times \to 118\times$ on synthetic networks) and stabilises around $58$--$117\times$ on the real IEEE/PEGASE cases. The reason is that for LOPF the dominant cost on the PyPSA side is not a fixed per-call overhead but the \emph{model assembly itself}, which grows with the problem and which Julia performs in compiled code. Three compounding effects explain this:
+
+\begin{enumerate}
+    \item \textbf{JuMP model construction efficiency:} JuMP constructs the constraint matrix directly in compiled native code. PyPSA's linopy builds constraints via Python object loops and pandas, with per-constraint overhead that accumulates with problem size.
+    \item \textbf{LP matrix sparsity:} For a network with $n$ buses and $|\mathcal{E}|$ lines, the LP has $O(n)$ variables and $O(n + |\mathcal{E}|)$ constraints. JuMP's sparse assembly scales as $O(n + |\mathcal{E}|)$, while linopy's Python loops carry additional interpreter overhead per constraint.
+    \item \textbf{Solver parity:} Both implementations use HiGHS as the LP solver, so solver time is identical. The entire measured speedup comes from model-building overhead --- which the multi-period benchmark isolates directly, PyPSA's time staying flat at $\approx 1.14\,\text{s}$ while Julia's grows with the horizon.
+\end{enumerate}
+
+\subsection{AC Power Flow: Algorithm vs.\ Language Overhead}
+\label{sec:analysis_ac}
+
+The AC power flow benchmark measures a fundamentally different quantity than the DC and LOPF benchmarks. In those cases both implementations execute the same algorithm (sparse linear solve; LP via HiGHS), so the speedup isolates pure language overhead. For AC power flow, the two implementations use different algorithms:
+
+\begin{itemize}
+    \item \textbf{Julia (PowerModels.jl + Ipopt):} casts the power flow as a nonlinear optimisation problem and solves it with an interior-point method. Ipopt is a general-purpose NLP solver; its per-iteration cost is higher than Newton--Raphson and it requires more iterations to converge.
+    \item \textbf{Python (PyPSA \texttt{pf()}):} applies Newton--Raphson (NR) iteration directly to the power flow mismatch equations. NR typically converges in 3--5 iterations for well-conditioned networks and is computationally efficient for this specific problem structure.
+\end{itemize}
+
+At small sizes Julia appears faster ($24.6\times$ at 3 buses), but this is again PyPSA's fixed Python overhead ($\approx 180\,\text{ms}$) masking the actual solve. As the overhead is amortised the comparison reverses: $6.3\times$ at 10 buses, $1.5\times$ at 50 buses, and at 100 buses Julia is about \textbf{twice as slow} as PyPSA ($0.5\times$). This is the honest outcome and the one method where the porting strategy does not pay off. The cause is algorithmic: the Ipopt interior-point solver carries a higher per-iteration cost and more iterations than Newton--Raphson, and because the AC work is dominated by this third-party solver, Julia's compiled model-assembly advantage --- decisive for the LP methods --- has nothing to act on.
+
+The implication is that recovering an AC advantage would require a native Newton--Raphson implementation in Julia (without the Ipopt wrapper), exploiting the specific structure of the power flow equations. Such an implementation is identified as a natural direction for future work (Section~\ref{sec:future}).
+
+\subsection{JIT Compilation Amortization}
+
+Julia's JIT compilation introduces a one-time startup cost (time-to-first-execution, TTFX) of 2--5 seconds per function. For the use cases targeted by this thesis --- large-scale energy system studies where thousands of LP solves are performed per scenario run --- this one-time cost is negligible. PyPSA-Eur, for instance, solves hundreds of LP problems per country-level scenario, making the per-solve LP advantage (tens to a few hundred times, e.g.\ $58\times$ on the 2{,}869-bus PEGASE grid) directly applicable once amortised.
+
+\subsection{Summary of Implementation Challenges}
+
+The three most significant challenges encountered during the porting process are documented here for future reference:
+
+\begin{enumerate}
+    \item \textbf{PowerModels.jl data format completeness:} The format requires 15+ mandatory fields per component. Several fields (\texttt{g\_fr}, \texttt{b\_fr}, \texttt{g\_to}, \texttt{b\_to}) are not prominently documented and were discovered by reading the PowerModels.jl source code. Missing any required field produces a \texttt{KeyError} at solve time rather than a meaningful validation message.
+
+    \item \textbf{Per-unit conversion in AC power flow:} PyPSA handles unit conversion transparently at the Python layer. The Julia implementation requires explicit conversion of all quantities. The diagnostic symptom of incorrect conversion is physically unreasonable angles (e.g., $\theta > \pi\,\text{rad}$) without an obvious error message.
+
+    \item \textbf{Susceptance formula for mixed unit systems:} The formula $b = S_\text{base}/x_\text{p.u.}$ gives susceptance in MW/rad when $x$ is in per-unit and the result is used in a physical MW power balance. Using $b = 1/x_\text{p.u.}$ (unitless per-unit susceptance) produces angles that are 100 times smaller than physically correct, causing the optimizer to find trivial but incorrect solutions.
+\end{enumerate}

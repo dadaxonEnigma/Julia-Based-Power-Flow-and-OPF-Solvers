@@ -1,126 +1,116 @@
-using PowerModels
-using Ipopt
-using JuMP
+"""
+Benchmark: Julia — full AC Power Flow, via the PowerFlowJulia LIBRARY API.
+
+Benchmarks the exported `pf(net; method=:ac)` entry point (PowerModels.jl + Ipopt),
+NOT a standalone kernel. Same seed-based topology generator as the DC/LOPF
+benchmark, matching python/benchmark_ac.py.
+
+Statistics: SEEDS random topologies × runs_per_seed timed solves; mean ± std + min.
+"""
+
 using Random
 using Printf
 using Statistics
+using LinearAlgebra
 
-include("../solvers/ac_power_flow.jl")
+BLAS.set_num_threads(1)   # fair single-thread linear algebra
 
-# ----------------------------------------------------------------
-#  Silent solver (reused across all benchmark calls)
-# ----------------------------------------------------------------
-const SILENT_IPOPT = optimizer_with_attributes(
-    Ipopt.Optimizer, "print_level" => 0, "sb" => "yes"
-)
+include(joinpath(@__DIR__, "..", "src", "PowerFlowJulia.jl"))
+using .PowerFlowJulia
 
-# ----------------------------------------------------------------
-#  Network generator — AC format (same random seed as DC/LOPF)
-# ----------------------------------------------------------------
+const SEEDS = [1, 2, 3]
+
 function generate_network_ac(n_buses; seed=42)
     rng = MersenneTwister(seed)
 
-    buses = ["Bus$i" for i in 1:n_buses]
-
-    lines      = Tuple{Int,Int,Float64,Float64}[]
-    line_names = String[]
-
-    # Spanning tree — guarantees connectivity
+    lines = Tuple{Int,Int,Float64,Float64}[]
     for i in 1:n_buses-1
         x = 0.05 + rand(rng) * 0.45
-        push!(lines,      (i, i+1, 0.01, x))   # (from, to, r, x)
-        push!(line_names, "L$i-$(i+1)")
+        push!(lines, (i, i+1, 0.01, x))
     end
-    # Additional mesh edges (~n/3)
     for _ in 1:max(1, n_buses ÷ 3)
         u = rand(rng, 1:n_buses-1)
         v = rand(rng, u+1:n_buses)
         x = 0.05 + rand(rng) * 0.45
-        push!(lines,      (u, v, 0.01, x))
-        push!(line_names, "L$u-$v")
+        push!(lines, (u, v, 0.01, x))
     end
 
-    # Loads at ~70% of non-slack buses
-    loads      = Dict{Int, Tuple{Float64,Float64}}()
+    loads      = Dict{Int,Float64}()
     total_load = 0.0
     for bus in 2:n_buses
         if rand(rng) > 0.3
             p = 50.0 + rand(rng) * 450.0
-            loads[bus] = (p, 0.0)           # (P_MW, Q_MVAr=0)
+            loads[bus] = p
             total_load += p
         end
     end
-    isempty(loads) && (loads[2] = (200.0, 0.0); total_load = 200.0)
+    isempty(loads) && (loads[2] = 200.0; total_load = 200.0)
 
-    # Generators: slack at bus 1, PV at every 4th bus
-    generators = Dict{Int, Tuple{Float64,Float64}}()
-    generators[1] = (total_load * 1.1, 1.0)    # (P_MW, V_set p.u.)
+    generators = Dict{Int,Float64}(1 => total_load * 1.1)
     for bus in 2:4:n_buses
-        p_gen = get(loads, bus, (0.0, 0.0))[1] * 0.5 + 50.0
-        generators[bus] = (p_gen, 1.0)
+        generators[bus] = get(loads, bus, 0.0) * 0.5 + 50.0
     end
 
-    return buses, lines, line_names, generators, loads
+    return n_buses, lines, generators, loads
 end
 
-# ----------------------------------------------------------------
-#  Benchmark kernel: data construction + AC PF solve
-# ----------------------------------------------------------------
-function ac_pf_bench(buses, lines, generators, loads)
-    pm_data = network_to_powermodels(buses, lines, generators, loads)
-    result  = solve_ac_pf(pm_data, SILENT_IPOPT)
-    return result["termination_status"]
-end
-
-function time_median(f, n_runs)
-    times = Float64[]
-    for _ in 1:n_runs
-        push!(times, @elapsed f())
+function build_network_ac(n_buses, lines, generators, loads)
+    net = Network(baseMVA=100.0)
+    for b in 1:n_buses
+        add!(net, "Bus", "Bus$b"; v_nom=380.0, slack=(b == 1))
     end
-    return median(times), minimum(times)
+    for (i, (f, t, r, x)) in enumerate(lines)
+        add!(net, "Line", "L$i"; bus0="Bus$f", bus1="Bus$t", r=r, x=x, s_nom=1e6)
+    end
+    for (bus, p_nom) in generators
+        add!(net, "Generator", "G$bus"; bus="Bus$bus", p_nom=p_nom, marginal_cost=20.0)
+    end
+    for (bus, p) in loads
+        add!(net, "Load", "D$bus"; bus="Bus$bus", p_set=p)
+    end
+    return net
 end
 
-# ================================================================
-#  BENCHMARK
-# ================================================================
-println("="^70)
-println("BENCHMARK: Julia — AC Power Flow (PowerModels.jl + Ipopt)")
-println("="^70)
-println("Note: times include pm_data construction + Ipopt solve (post-JIT).")
+function bench_stats(build, solve, runs_per_seed)
+    samples = Float64[]
+    for s in SEEDS
+        net = build(s)
+        solve(net)                              # JIT / warm-up
+        for _ in 1:runs_per_seed
+            push!(samples, @elapsed solve(net))
+        end
+    end
+    n = length(samples)
+    return (mean = mean(samples) * 1000,
+            std  = (n > 1 ? std(samples) : 0.0) * 1000,
+            min  = minimum(samples) * 1000,
+            n    = n)
+end
+
+println("="^74)
+println("BENCHMARK: Julia (PowerFlowJulia API) — AC Power Flow")
+println("pf(net; method=:ac) → PowerModels.jl + Ipopt  |  seeds $SEEDS")
+println("="^74)
 
 AC_SIZES = [3, 10, 50, 100]
 
-println("\n[AC POWER FLOW BENCHMARK]")
-println("-"^70)
-@printf("%-10s %12s %12s %10s\n", "Buses", "Median (ms)", "Min (ms)", "Lines")
-println("-"^70)
+println("\n[AC POWER FLOW]")
+println("-"^74)
+@printf("%-8s %12s %12s %12s %6s\n", "Buses", "Mean (ms)", "Std (ms)", "Min (ms)", "N")
+println("-"^74)
 
-ac_results = Dict{Int,Float64}()
-
+ac = Dict{Int,NamedTuple}()
 for n in AC_SIZES
-    buses, lines, line_names, generators, loads = generate_network_ac(n)
-
-    # JIT warmup — compile all PowerModels / Ipopt code paths
-    ac_pf_bench(buses, lines, generators, loads)
-
-    n_runs = n <= 10 ? 20 : (n <= 50 ? 10 : 5)
-    med, mn = time_median(n_runs) do
-        ac_pf_bench(buses, lines, generators, loads)
-    end
-
-    ac_results[n] = med * 1000
-    @printf("%-10d %12.3f %12.3f %10d\n", n, med*1000, mn*1000, length(lines))
+    runs = n <= 10 ? 10 : (n <= 50 ? 8 : 5)
+    st = bench_stats(s -> build_network_ac(generate_network_ac(n, seed=s)...),
+                     net -> pf(net; method=:ac, verbose=false), runs)
+    ac[n] = st
+    @printf("%-8d %12.3f %12.3f %12.3f %6d\n", n, st.mean, st.std, st.min, st.n)
 end
 
-# ----------------------------------------------------------------
-#  Save CSV (appends AC_PF rows; run alongside DC/LOPF benchmarks)
-# ----------------------------------------------------------------
 open(joinpath(@__DIR__, "..", "..", "results", "julia_ac_benchmark.csv"), "w") do io
-    println(io, "module,n_buses,time_ms")
-    for n in AC_SIZES
-        println(io, "AC_PF,$n,$(ac_results[n])")
-    end
+    println(io, "module,n_buses,time_ms,std_ms,min_ms,n_samples")
+    for n in AC_SIZES; s=ac[n]; println(io, "AC_PF,$n,$(s.mean),$(s.std),$(s.min),$(s.n)"); end
 end
 
-println("\n[OK] Saved to results/julia_ac_benchmark.csv")
-println("Run python/benchmark_ac.py to get Python times for comparison.")
+println("\n[OK] results/julia_ac_benchmark.csv  |  run python/benchmark_ac.py for PyPSA")

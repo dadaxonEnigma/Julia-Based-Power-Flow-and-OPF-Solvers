@@ -5,6 +5,9 @@ Same network as julia/benchmarks/benchmark_uc.jl for direct comparison.
 Network: 3-bus, G_base (continuous 270 MW), G_peak (committable 150 MW),
          Wind 150 MW (zero cost), Load2=250 MW·profile, Load3=175 MW·profile
 """
+import os
+for _v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ[_v] = "1"          # fair single-thread linear algebra (set before numpy)
 import numpy as np
 import pypsa
 import time
@@ -72,35 +75,37 @@ def build_network(T):
     return net
 
 
-def time_median(func, n_runs):
-    times = []
+def bench_stats(run, n_runs):
+    run()                                       # warm-up
+    samples = []
     for _ in range(n_runs):
         t0 = time.perf_counter()
-        func()
-        times.append(time.perf_counter() - t0)
-    return statistics.median(times), min(times)
+        run()
+        samples.append(time.perf_counter() - t0)
+    mean = statistics.mean(samples) * 1000
+    std = (statistics.stdev(samples) if len(samples) > 1 else 0.0) * 1000
+    return mean, std, min(samples) * 1000, len(samples)
 
 
-print("=" * 65)
+print("=" * 60)
 print("BENCHMARK: Unit Commitment + LMP  (Python/PyPSA — linopy + HiGHS)")
-print("=" * 65)
-print(f"Network: 3-bus | G_base=270MW | G_peak=150MW committable | Wind=150MW")
-print(f"\n{'T (h)':<8} {'Median (ms)':>12} {'Min (ms)':>12}")
-print("-" * 38)
+print("3-bus | G_base=270 | G_peak=150 committable | Wind=150")
+print("=" * 60)
+print(f"{'T (h)':<8} {'Mean (ms)':>12} {'Std (ms)':>12} {'Min (ms)':>12} {'N':>6}")
+print("-" * 60)
 
-HORIZONS = [6, 12, 24, 48]
+HORIZONS = [6, 12, 24]
 uc_results = {}
 
 for T in HORIZONS:
-    def run_uc(T=T):
-        net = build_network(T)
-        net.optimize(solver_name="highs")
+    net = build_network(T)                      # build once, time only the solve
+    def run_uc(net=net):
+        net.optimize(solver_name="highs", solver_options={"threads": 1})
 
-    n_runs = 10 if T <= 24 else 5
-    med, mn = time_median(run_uc, n_runs)
-
-    uc_results[T] = med * 1000
-    print(f"{T:<8} {med*1000:>12.3f} {mn*1000:>12.3f}")
+    n_runs = 12 if T <= 24 else 8
+    mean, sd, mn, ns = bench_stats(run_uc, n_runs)
+    uc_results[T] = (mean, sd, mn, ns)
+    print(f"{T:<8} {mean:>12.3f} {sd:>12.3f} {mn:>12.3f} {ns:>6}")
 
 # ── LMP snapshot for T=24 ────────────────────────────────────────────────────
 print("\n--- LMP snapshot (T=24) ---")
@@ -115,11 +120,10 @@ except Exception as e:
     print(f"  LMP unavailable: {e}")
 
 # ── Save CSV ─────────────────────────────────────────────────────────────────
-with open("../results/python_uc_benchmark.csv", "w", newline="") as f:
+with open("results/python_uc_benchmark.csv", "w", newline="") as f:
     writer = csv.writer(f)
-    writer.writerow(["module", "T", "time_ms"])
+    writer.writerow(["module", "T", "time_ms", "std_ms", "min_ms", "n_samples"])
     for T in HORIZONS:
-        writer.writerow(["UC", T, uc_results[T]])
+        writer.writerow(["UC", T, *uc_results[T]])
 
-print("\n[OK] Saved to results/python_uc_benchmark.csv")
-print("Run julia/benchmarks/benchmark_uc.jl for Julia comparison.")
+print("\n[OK] results/python_uc_benchmark.csv")

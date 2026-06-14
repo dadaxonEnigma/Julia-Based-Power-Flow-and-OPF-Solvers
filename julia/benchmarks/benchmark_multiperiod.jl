@@ -1,64 +1,69 @@
-using JuMP
-using HiGHS
-using Random
+"""
+Benchmark: Multi-Period LOPF — PowerFlowJulia API (JuMP + HiGHS).
+
+Exported `optimize(net; method=:mp, T)` on an add!-built 3-bus network with
+storage and wind, varying T. Same network as python/benchmark_multiperiod.py.
+Fixed network ⇒ no seed sweep; mean ± std + min over `n_runs` solves.
+"""
+
 using Printf
 using Statistics
 
-include("../solvers/lopf_multiperiod.jl")
+include(joinpath(@__DIR__, "..", "src", "PowerFlowJulia.jl"))
+using .PowerFlowJulia
 
-# ----------------------------------------------------------------
-#  Fixed 3-bus network (same as lopf_multiperiod.jl main script)
-# ----------------------------------------------------------------
-const BUSES_MP = ["Bus 1", "Bus 2", "Bus 3"]
-const LINES_MP = [(1, 2, 0.01, 0.1), (1, 3, 0.01, 0.1), (2, 3, 0.01, 0.1)]
-const GENS_MP  = Dict(1 => (270.0, 20.0), 2 => (100.0, 50.0))
-const LOADS_MP = Dict(2 => 250.0, 3 => 175.0)
-const STOR_MP  = Dict(2 => (100.0, 300.0, 0.95, 0.95))
-const WIND_MP  = Dict(3 => 150.0)
+tile(base, T) = repeat(base, (T ÷ length(base)) + 1)[1:T]
 
-function time_median(f, n_runs)
-    times = Float64[]
-    for _ in 1:n_runs
-        push!(times, @elapsed f())
-    end
-    return median(times), minimum(times)
+function build_network()
+    net = Network(baseMVA=100.0)
+    add!(net, "Bus", "Bus1"; v_nom=380.0, slack=true)
+    add!(net, "Bus", "Bus2"; v_nom=380.0)
+    add!(net, "Bus", "Bus3"; v_nom=380.0)
+    add!(net, "Line", "L12"; bus0="Bus1", bus1="Bus2", r=0.01, x=0.1, s_nom=1e6)
+    add!(net, "Line", "L13"; bus0="Bus1", bus1="Bus3", r=0.01, x=0.1, s_nom=1e6)
+    add!(net, "Line", "L23"; bus0="Bus2", bus1="Bus3", r=0.01, x=0.1, s_nom=1e6)
+    add!(net, "Generator", "G1"; bus="Bus1", p_nom=270.0, marginal_cost=20.0)
+    add!(net, "Generator", "G2"; bus="Bus2", p_nom=100.0, marginal_cost=50.0)
+    add!(net, "Generator", "Wind3"; bus="Bus3", p_nom=150.0, marginal_cost=0.0, carrier="wind")
+    add!(net, "Load", "Load2"; bus="Bus2", p_set=250.0)
+    add!(net, "Load", "Load3"; bus="Bus3", p_set=175.0)
+    add!(net, "StorageUnit", "Bat2"; bus="Bus2", p_nom=100.0, e_nom=300.0,
+         efficiency_charge=0.95, efficiency_discharge=0.95)
+    return net
 end
 
-println("="^65)
-println("BENCHMARK: Multi-Period LOPF  (Julia — JuMP + HiGHS)")
-println("="^65)
-println("Network: 3 buses, storage, wind; varying horizon T\n")
+function bench_stats(solve, n_runs)
+    solve()                                     # JIT / warm-up
+    samples = [@elapsed solve() for _ in 1:n_runs]
+    return (mean = mean(samples) * 1000,
+            std  = (n_runs > 1 ? std(samples) : 0.0) * 1000,
+            min  = minimum(samples) * 1000,
+            n    = n_runs)
+end
 
-HORIZONS = [6, 12, 24, 48, 96]
+println("="^60)
+println("BENCHMARK: Multi-Period LOPF  (PowerFlowJulia API)")
+println("3 buses, storage, wind  |  optimize(net; method=:mp, T)")
+println("="^60)
+@printf("%-8s %12s %12s %12s %6s\n", "T (h)", "Mean (ms)", "Std (ms)", "Min (ms)", "N")
+println("-"^60)
 
-@printf("%-8s %12s %12s %8s\n", "T (h)", "Median (ms)", "Min (ms)", "Vars")
-println("-"^45)
-
-mp_results = Dict{Int,Float64}()
-
+HORIZONS = [6, 12, 24, 48]
+net = build_network()
+res = Dict{Int,NamedTuple}()
 for T in HORIZONS
-    # JIT warmup
-    solve_lopf_multiperiod(BUSES_MP, LINES_MP, GENS_MP, LOADS_MP,
-                           STOR_MP, WIND_MP; T=T)
-
-    n_runs = T <= 24 ? 20 : (T <= 48 ? 10 : 5)
-    med, mn = time_median(n_runs) do
-        solve_lopf_multiperiod(BUSES_MP, LINES_MP, GENS_MP, LOADS_MP,
-                               STOR_MP, WIND_MP; T=T)
-    end
-
-    # Approximate variable count: T*(n_buses + n_gens + 3*n_stor)
-    n_vars = T * (3 + 2 + 3)
-    mp_results[T] = med * 1000
-    @printf("%-8d %12.3f %12.3f %8d\n", T, med*1000, mn*1000, n_vars)
+    lp = tile(DEFAULT_LOAD_PROFILE, T)
+    wp = tile(DEFAULT_WIND_PROFILE, T)
+    n_runs = T <= 24 ? 15 : (T <= 48 ? 10 : 6)
+    st = bench_stats(() -> optimize(net; method=:mp, T=T, load_profile=lp,
+                                    wind_profile=wp, verbose=false), n_runs)
+    res[T] = st
+    @printf("%-8d %12.3f %12.3f %12.3f %6d\n", T, st.mean, st.std, st.min, st.n)
 end
 
 open(joinpath(@__DIR__, "..", "..", "results", "julia_mp_benchmark.csv"), "w") do io
-    println(io, "module,T,time_ms")
-    for T in HORIZONS
-        println(io, "MLOPF,$T,$(mp_results[T])")
-    end
+    println(io, "module,T,time_ms,std_ms,min_ms,n_samples")
+    for T in HORIZONS; s=res[T]; println(io, "MLOPF,$T,$(s.mean),$(s.std),$(s.min),$(s.n)"); end
 end
 
-println("\n[OK] Saved to results/julia_mp_benchmark.csv")
-println("Run python/benchmark_multiperiod.py for Python comparison.")
+println("\n[OK] results/julia_mp_benchmark.csv  |  run python/benchmark_multiperiod.py for PyPSA")

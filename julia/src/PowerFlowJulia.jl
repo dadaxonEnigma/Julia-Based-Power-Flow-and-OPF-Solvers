@@ -30,6 +30,7 @@ include("network.jl")
 include("dispatch.jl")
 include("unit_commitment.jl")
 include("ac_pf.jl")
+include("data_loader.jl")
 include("forecasting.jl")
 include("stochastic_lopf.jl")
 include("api.jl")
@@ -65,6 +66,9 @@ export plot_dispatch, plot_lmp, plot_soc, plot_uc_schedule, plot_network
 
 # ── Default profiles ──────────────────────────────────────────────────────
 export DEFAULT_LOAD_PROFILE, DEFAULT_WIND_PROFILE
+
+# ── Real load data (OPSD / ENTSO-E) ───────────────────────────────────────
+export load_real_data, train_test_split_days, DEFAULT_LOAD_CSV, DEFAULT_TEMP_CSV
 
 # ── ML Forecasting (AI component) ─────────────────────────────────────────
 export LoadForecaster
