@@ -1,7 +1,7 @@
 """
 validation_full.jl — Julia values for all components and solvers.
 
-Saves: results/julia_validation_full.csv
+Saves: results/validation/julia_validation_full.csv
 Compare with: python python/validation_full.py
 Then diff: python python/compare_validation.py
 
@@ -234,7 +234,7 @@ println("done")
 # ─────────────────────────────────────────────────────────────────────────────
 #  Write CSV (manual, no CSV.jl dependency)
 # ─────────────────────────────────────────────────────────────────────────────
-out = joinpath(@__DIR__, "..", "..", "results", "julia_validation_full.csv")
+out = joinpath(@__DIR__, "..", "..", "results", "validation", "julia_validation_full.csv")
 open(out, "w") do f
     println(f, "test_id,variable,t,value")
     for r in rows

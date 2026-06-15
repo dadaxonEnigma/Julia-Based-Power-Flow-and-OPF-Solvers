@@ -130,10 +130,10 @@ for n in LOPF_SIZES
     @printf("%-8d %12.4f %12.4f %12.4f %6d\n", n, st.mean, st.std, st.min, st.n)
 end
 
-open(joinpath(@__DIR__, "..", "..", "results", "julia_benchmark.csv"), "w") do io
+open(joinpath(@__DIR__, "..", "..", "results", "benchmarks", "julia_benchmark.csv"), "w") do io
     println(io, "module,n_buses,time_ms,std_ms,min_ms,n_samples")
     for n in DC_SIZES;   s=dc[n]; println(io, "DC_PF,$n,$(s.mean),$(s.std),$(s.min),$(s.n)"); end
     for n in LOPF_SIZES; s=lp[n]; println(io, "LOPF,$n,$(s.mean),$(s.std),$(s.min),$(s.n)"); end
 end
 
-println("\n[OK] results/julia_benchmark.csv  |  run python/benchmark.py for PyPSA")
+println("\n[OK] results/benchmarks/julia_benchmark.csv  |  run python/benchmark.py for PyPSA")

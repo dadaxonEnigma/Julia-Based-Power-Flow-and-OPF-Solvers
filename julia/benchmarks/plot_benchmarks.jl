@@ -5,8 +5,8 @@ using DataFrames
 using Printf
 
 # ─── Load data ──────────────────────────────────────────────────────────────
-python_data = CSV.read("../results/python_benchmark.csv", DataFrame)
-julia_data  = CSV.read("../results/julia_benchmark.csv",  DataFrame)
+python_data = CSV.read("../results/benchmarks/python_benchmark.csv", DataFrame)
+julia_data  = CSV.read("../results/benchmarks/julia_benchmark.csv",  DataFrame)
 
 dc_py   = python_data[python_data.module .== "DC_PF", :]
 dc_jl   = julia_data[julia_data.module   .== "DC_PF", :]

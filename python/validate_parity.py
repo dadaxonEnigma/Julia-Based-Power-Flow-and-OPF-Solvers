@@ -1,6 +1,6 @@
 """
 Numerical parity validation: PyPSA reference results.
-Saves results/pypsa_parity.csv — read by julia/validation/validate_parity.jl.
+Saves results/validation/pypsa_parity.csv — read by julia/validation/validate_parity.jl.
 
 Cases
 -----
@@ -150,7 +150,7 @@ print("done")
 # ═══════════════════════════════════════════════════════════════════════════════
 # Save CSV
 # ═══════════════════════════════════════════════════════════════════════════════
-out = "../results/pypsa_parity.csv"
+out = "../results/validation/pypsa_parity.csv"
 with open(out, "w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=["case", "variable", "t", "value"])
     w.writeheader()

@@ -152,10 +152,10 @@ for n in SIZES:
     print(f"{n:<8} {mean:>12.3f} {sd:>12.3f} {mn:>12.3f} {ns:>6}")
 
 # ── Save CSV ───────────────────────────────────────────────────────────────────
-with open("results/python_uc_scale.csv", "w", newline="") as f:
+with open("results/benchmarks/python_uc_scale.csv", "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["module", "n_buses", "T", "time_ms", "std_ms", "min_ms", "n_samples"])
     for n in SIZES:
         writer.writerow(["UC", n, T_FIXED, *uc_results[n]])
 
-print("\n[OK] results/python_uc_scale.csv")
+print("\n[OK] results/benchmarks/python_uc_scale.csv")

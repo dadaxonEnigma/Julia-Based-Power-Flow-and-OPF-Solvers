@@ -9,7 +9,7 @@ Academic conventions applied:
   - serif font, 300 dpi, legends with frames
   - the reported metric is the minimum solve time (min_ms), matching the thesis
 
-Outputs -> results/plots/*.png  and  results/speedup_summary.csv
+Outputs -> results/plots/*.png  and  results/benchmarks/speedup_summary.csv
 
 Run:
   pypsa_env/Scripts/python.exe python/make_benchmark_figures.py
@@ -46,7 +46,7 @@ os.makedirs(PLT, exist_ok=True)
 
 
 def load(name):
-    p = os.path.join(RES, name)
+    p = os.path.join(RES, "benchmarks", name)
     return pd.read_csv(p) if os.path.isfile(p) else None
 
 
@@ -179,7 +179,7 @@ if jr is not None and pr is not None:
 
 # ── Consolidated speedup table ───────────────────────────────────────────────
 df = pd.DataFrame(speedup_rows, columns=["method", "scenario", "julia_ms", "pypsa_ms", "speedup"])
-df.to_csv(os.path.join(RES, "speedup_summary.csv"), index=False, float_format="%.3f")
+df.to_csv(os.path.join(RES, "benchmarks", "speedup_summary.csv"), index=False, float_format="%.3f")
 print("\nspeedup_summary.csv  ({} rows)".format(len(df)))
 if len(df):
     print("  speedup range: {:.1f} .. {:.1f}  (median {:.1f})".format(

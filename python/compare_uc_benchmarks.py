@@ -1,6 +1,6 @@
 """
 Compare Julia vs PyPSA for Unit Commitment + LMP.
-Reads results/julia_uc_benchmark.csv and results/python_uc_benchmark.csv.
+Reads results/benchmarks/julia_uc_benchmark.csv and results/benchmarks/python_uc_benchmark.csv.
 """
 import csv
 
@@ -14,8 +14,8 @@ def read_uc_csv(path):
 
 
 try:
-    julia  = read_uc_csv("../results/julia_uc_benchmark.csv")
-    python = read_uc_csv("../results/python_uc_benchmark.csv")
+    julia  = read_uc_csv("../results/benchmarks/julia_uc_benchmark.csv")
+    python = read_uc_csv("../results/benchmarks/python_uc_benchmark.csv")
 except FileNotFoundError as e:
     print(f"Missing file: {e}")
     print("Run julia/benchmarks/benchmark_uc.jl and python/benchmark_uc.py first.")

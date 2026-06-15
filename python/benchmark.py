@@ -131,7 +131,7 @@ for n in LOPF_SIZES:
     lopf_results[n] = (mean, sd, mn, ns)
     print(f"{n:<8} {mean:>12.4f} {sd:>12.4f} {mn:>12.4f} {ns:>6}")
 
-with open("results/python_benchmark.csv", "w", newline="") as f:
+with open("results/benchmarks/python_benchmark.csv", "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["module", "n_buses", "time_ms", "std_ms", "min_ms", "n_samples"])
     for n in DC_SIZES:
@@ -139,4 +139,4 @@ with open("results/python_benchmark.csv", "w", newline="") as f:
     for n in LOPF_SIZES:
         writer.writerow(["LOPF", n, *lopf_results[n]])
 
-print("\n[OK] results/python_benchmark.csv")
+print("\n[OK] results/benchmarks/python_benchmark.csv")

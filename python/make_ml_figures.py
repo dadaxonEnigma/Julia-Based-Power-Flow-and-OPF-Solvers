@@ -48,7 +48,7 @@ ax.axhline(mape[0], color="tab:green", linestyle="--", linewidth=1, alpha=0.7)
 save(fig, "fig_ml_accuracy.png")
 
 # ── 2. Sample-day forecast with 90% conformal band ──────────────────────────
-sd = pd.read_csv(os.path.join(RES, "ml_sample_day.csv"))
+sd = pd.read_csv(os.path.join(RES, "ml", "ml_sample_day.csv"))
 fig, ax = plt.subplots(figsize=(6.5, 4))
 ax.fill_between(sd.hour, sd.lower, sd.upper, color="tab:blue", alpha=0.20,
                 label="90% conformal interval")
@@ -61,7 +61,7 @@ ax.legend(frameon=True, loc="best")
 save(fig, "fig_ml_forecast.png")
 
 # ── 3. Stochastic LOPF cost distribution with E[cost] and CVaR90 ─────────────
-sc = pd.read_csv(os.path.join(RES, "ml_scenario_costs.csv"))
+sc = pd.read_csv(os.path.join(RES, "ml", "ml_scenario_costs.csv"))
 costs = sc[sc.key.str.startswith("scenario_")]["value"].astype(float).values
 ecost = float(sc.loc[sc.key == "expected", "value"].iloc[0])
 cvar  = float(sc.loc[sc.key == "cvar90", "value"].iloc[0])

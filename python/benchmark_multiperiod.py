@@ -100,10 +100,10 @@ for T in HORIZONS:
     mp_results[T] = (mean, sd, mn, ns)
     print(f"{T:<8} {mean:>12.3f} {sd:>12.3f} {mn:>12.3f} {ns:>6}")
 
-with open("results/python_mp_benchmark.csv", "w", newline="") as f:
+with open("results/benchmarks/python_mp_benchmark.csv", "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["module", "T", "time_ms", "std_ms", "min_ms", "n_samples"])
     for T in HORIZONS:
         writer.writerow(["MLOPF", T, *mp_results[T]])
 
-print("\n[OK] results/python_mp_benchmark.csv")
+print("\n[OK] results/benchmarks/python_mp_benchmark.csv")

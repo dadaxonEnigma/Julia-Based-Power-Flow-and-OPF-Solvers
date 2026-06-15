@@ -2,12 +2,12 @@
 compare_validation.py — Diff table: PyPSA vs Julia for all tests.
 
 Reads:
-  results/pypsa_validation_full.csv   (from python/validation_full.py)
-  results/julia_validation_full.csv   (from julia/validation/validation_full.jl)
+  results/validation/pypsa_validation_full.csv   (from python/validation_full.py)
+  results/validation/julia_validation_full.csv   (from julia/validation/validation_full.jl)
 
 Saves:
-  results/validation_comparison.csv   — full diff table
-  results/validation_summary.csv      — one row per test, pass/warn/fail counts
+  results/validation/validation_comparison.csv   — full diff table
+  results/validation/validation_summary.csv      — one row per test, pass/warn/fail counts
 
 Usage:
   python python/compare_validation.py
@@ -50,14 +50,14 @@ def load_csv(path):
     return data
 
 try:
-    pypsa_data = load_csv("../results/pypsa_validation_full.csv")
+    pypsa_data = load_csv("../results/validation/pypsa_validation_full.csv")
 except FileNotFoundError:
     print("[ERROR] pypsa_validation_full.csv not found.")
     print("        Run: python python/validation_full.py")
     exit(1)
 
 try:
-    julia_data = load_csv("../results/julia_validation_full.csv")
+    julia_data = load_csv("../results/validation/julia_validation_full.csv")
 except FileNotFoundError:
     print("[ERROR] julia_validation_full.csv not found.")
     print("        Run: julia julia/validation/validation_full.jl")
@@ -103,7 +103,7 @@ for key in all_keys:
     summary[test_id][bucket] += 1
 
 # ── Save comparison CSV ───────────────────────────────────────────────────────
-out_comp = "../results/validation_comparison.csv"
+out_comp = "../results/validation/validation_comparison.csv"
 with open(out_comp, "w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=["test_id","variable","t",
                                       "pypsa","julia","abs_diff","rel_diff","status"])
@@ -111,7 +111,7 @@ with open(out_comp, "w", newline="") as f:
     w.writerows(comparison_rows)
 
 # ── Save summary CSV ──────────────────────────────────────────────────────────
-out_sum = "../results/validation_summary.csv"
+out_sum = "../results/validation/validation_summary.csv"
 with open(out_sum, "w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=["test_id","PASS","WARN","FAIL","OTHER","overall"])
     w.writeheader()

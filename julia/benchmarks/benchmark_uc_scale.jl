@@ -107,9 +107,9 @@ for n in SIZES
     @printf("%-8d %12.3f %12.3f %12.3f %6d\n", n, st.mean, st.std, st.min, st.n)
 end
 
-open(joinpath(@__DIR__, "..", "..", "results", "julia_uc_scale.csv"), "w") do io
+open(joinpath(@__DIR__, "..", "..", "results", "benchmarks", "julia_uc_scale.csv"), "w") do io
     println(io, "module,n_buses,T,time_ms,std_ms,min_ms,n_samples")
     for n in SIZES; s=res[n]; println(io, "UC,$n,24,$(s.mean),$(s.std),$(s.min),$(s.n)"); end
 end
 
-println("\n[OK] results/julia_uc_scale.csv  |  run python/benchmark_uc_scale.py for PyPSA")
+println("\n[OK] results/benchmarks/julia_uc_scale.csv  |  run python/benchmark_uc_scale.py for PyPSA")

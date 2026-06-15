@@ -5,7 +5,7 @@ benchmark_realcases.jl — performance benchmark on STANDARD published networks
 Loads each MATPOWER `.m` case into a PowerFlowJulia `Network` and times the
 **exported API** (`pf` for DC power flow, `optimize` for LOPF) — the same entry
 points a user calls — after a JIT warm-up. Results are written to
-`results/julia_realcases_benchmark.csv`.
+`results/benchmarks/julia_realcases_benchmark.csv`.
 
 Cases (place the .m files in data/):
   case118.m        IEEE 118-bus
@@ -102,7 +102,7 @@ for c in CASES
     end
 end
 
-out = joinpath(@__DIR__, "..", "..", "results", "julia_realcases_benchmark.csv")
+out = joinpath(@__DIR__, "..", "..", "results", "benchmarks", "julia_realcases_benchmark.csv")
 open(out, "w") do io
     println(io, "case,n_buses,module,time_ms,std_ms,min_ms")
     for r in rows

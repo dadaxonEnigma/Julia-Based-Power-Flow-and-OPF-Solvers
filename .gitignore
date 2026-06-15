@@ -37,15 +37,8 @@ data/raw/
 .claude/
 CLAUDE.md
 
-# LaTeX build artifacts (the .tex/.bib source IS tracked)
-latex/*.aux
-latex/*.bbl
-latex/*.bcf
-latex/*.blg
-latex/*.lof
-latex/*.lot
-latex/*.toc
-latex/*.run.xml
-latex/*.synctex.gz
-latex/*.fls
-latex/*.fdb_latexmk
+# Thesis document — kept LOCAL only, not part of the code repository
+latex/
+thesis_docx/
+docs/
+requeirements_for_thesis/

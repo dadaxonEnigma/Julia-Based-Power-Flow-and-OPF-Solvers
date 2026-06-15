@@ -1,5 +1,5 @@
 """
-Читает results/julia_benchmark.csv и results/python_benchmark.csv,
+Читает results/benchmarks/julia_benchmark.csv и results/benchmarks/python_benchmark.csv,
 выводит сводную таблицу со speedup Julia vs Python.
 """
 import csv
@@ -12,8 +12,8 @@ def read_csv(path):
             results[key] = float(row["time_ms"])
     return results
 
-julia  = read_csv("results/julia_benchmark.csv")
-python = read_csv("results/python_benchmark.csv")
+julia  = read_csv("results/benchmarks/julia_benchmark.csv")
+python = read_csv("results/benchmarks/python_benchmark.csv")
 
 for module in ["DC_PF", "LOPF"]:
     sizes = sorted({n for (m, n) in julia if m == module})

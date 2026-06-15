@@ -104,10 +104,10 @@ for n in AC_SIZES:
     ac_results[n] = (mean, sd, mn, ns)
     print(f"{n:<8} {mean:>12.3f} {sd:>12.3f} {mn:>12.3f} {ns:>6}")
 
-with open("results/python_ac_benchmark.csv", "w", newline="") as f:
+with open("results/benchmarks/python_ac_benchmark.csv", "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["module", "n_buses", "time_ms", "std_ms", "min_ms", "n_samples"])
     for n in AC_SIZES:
         writer.writerow(["AC_PF", n, *ac_results[n]])
 
-print("\n[OK] results/python_ac_benchmark.csv")
+print("\n[OK] results/benchmarks/python_ac_benchmark.csv")

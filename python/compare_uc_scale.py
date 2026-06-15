@@ -1,6 +1,6 @@
 """
 Compare Julia vs PyPSA for UC scaling (3, 14, 30 buses, T=24).
-Reads results/julia_uc_scale.csv and results/python_uc_scale.csv.
+Reads results/benchmarks/julia_uc_scale.csv and results/benchmarks/python_uc_scale.csv.
 """
 import csv
 import os
@@ -14,8 +14,8 @@ def read_scale_csv(path):
     return results
 
 
-julia_path  = "../results/julia_uc_scale.csv"
-python_path = "../results/python_uc_scale.csv"
+julia_path  = "../results/benchmarks/julia_uc_scale.csv"
+python_path = "../results/benchmarks/python_uc_scale.csv"
 
 for p in [julia_path, python_path]:
     if not os.path.exists(p):

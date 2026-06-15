@@ -1,7 +1,7 @@
 """
 validation_full.py — PyPSA reference values for all components and solvers.
 
-Saves: results/pypsa_validation_full.csv
+Saves: results/validation/pypsa_validation_full.csv
 Compare with: julia julia/validation/validation_full.jl
 Then diff: python python/compare_validation.py
 
@@ -253,7 +253,7 @@ print("done")
 # ─────────────────────────────────────────────────────────────────────────────
 #  Save CSV
 # ─────────────────────────────────────────────────────────────────────────────
-out = "../results/pypsa_validation_full.csv"
+out = "../results/validation/pypsa_validation_full.csv"
 with open(out, "w", newline="") as f:
     w = csv.DictWriter(f, fieldnames=["test_id", "variable", "t", "value"])
     w.writeheader()

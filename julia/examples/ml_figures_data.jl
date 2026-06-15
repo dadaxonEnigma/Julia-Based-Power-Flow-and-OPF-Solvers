@@ -18,7 +18,7 @@ using .PowerFlowJulia
 using Statistics, Printf, Dates
 
 dow0(date) = dayofweek(date) - 1          # Julia Mon=1..Sun=7 -> 0..6
-RES = joinpath(@__DIR__, "..", "..", "results")
+RES = joinpath(@__DIR__, "..", "..", "results", "ml")
 
 TRAIN_DAYS = 1095
 TEST_DAYS  = 60

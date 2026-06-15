@@ -61,9 +61,9 @@ for T in HORIZONS
     @printf("%-8d %12.3f %12.3f %12.3f %6d\n", T, st.mean, st.std, st.min, st.n)
 end
 
-open(joinpath(@__DIR__, "..", "..", "results", "julia_mp_benchmark.csv"), "w") do io
+open(joinpath(@__DIR__, "..", "..", "results", "benchmarks", "julia_mp_benchmark.csv"), "w") do io
     println(io, "module,T,time_ms,std_ms,min_ms,n_samples")
     for T in HORIZONS; s=res[T]; println(io, "MLOPF,$T,$(s.mean),$(s.std),$(s.min),$(s.n)"); end
 end
 
-println("\n[OK] results/julia_mp_benchmark.csv  |  run python/benchmark_multiperiod.py for PyPSA")
+println("\n[OK] results/benchmarks/julia_mp_benchmark.csv  |  run python/benchmark_multiperiod.py for PyPSA")

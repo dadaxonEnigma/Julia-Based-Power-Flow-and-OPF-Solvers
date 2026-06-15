@@ -120,10 +120,10 @@ except Exception as e:
     print(f"  LMP unavailable: {e}")
 
 # ── Save CSV ─────────────────────────────────────────────────────────────────
-with open("results/python_uc_benchmark.csv", "w", newline="") as f:
+with open("results/benchmarks/python_uc_benchmark.csv", "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["module", "T", "time_ms", "std_ms", "min_ms", "n_samples"])
     for T in HORIZONS:
         writer.writerow(["UC", T, *uc_results[T]])
 
-print("\n[OK] results/python_uc_benchmark.csv")
+print("\n[OK] results/benchmarks/python_uc_benchmark.csv")
