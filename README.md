@@ -16,13 +16,17 @@ PowerFlowJulia is a Julia implementation of core power system simulation and opt
 
 | Method | Network size | Julia (ms) | PyPSA (ms) | Speedup |
 |---|---|---|---|---|
-| DC Power Flow | 500 buses | 10.6 | 811.8 | **77×** |
-| LOPF | 500 buses | 21.0 | 15,857 | **753×** |
-| AC Power Flow | 100 buses | 47.6 | 341.0 | **7×** |
+| DC Power Flow | 500 buses (synthetic) | 10.6 | 811.8 | **77×** |
+| LOPF | 500 buses (synthetic) | 21.0 | 15,857 | **753×** |
+| AC Power Flow | 100 buses (synthetic) | 47.6 | 341.0 | **7×** |
 | Unit Commitment | 14 buses, T=24 | 63.3 | 2,066 | **33×** |
 | Multi-Period LOPF | T=24 | 6.4 | 1,485 | **188×** |
+| LOPF | PEGASE 2869 (real EU grid) | 491 | 28,427 | **58×** |
+| DC Power Flow | PEGASE 2869 (real EU grid) | 423 | 2,005 | **4.7×** |
 
-**AI component:** LSTM load forecaster (MAPE 13.5%) reduces dispatch cost by **7.9%** vs naive profile. Stochastic LOPF provides CVaR₉₀ = 349,879 € for risk quantification.
+Speedups come from Julia's leaner model-build layer (no Python/pandas/linopy overhead), **not** a faster solver: LP/MILP use the same HiGHS on both sides, AC PF uses Ipopt. Small-network ratios are dominated by PyPSA's fixed Python overhead; the compute-bound figures (large real networks) are the honest ones. AC PF is the one method where porting yields little: only ~7× at 100 buses and slower than PyPSA's Newton–Raphson beyond that. All figures are the minimum over multiple seeds on pinned PyPSA 1.2.2 / Julia 1.12.5.
+
+**AI component:** LSTM day-ahead load forecaster trained on **real** German load (OPSD/ENTSO-E). On a strict out-of-time test it beats the persistence baseline (MAPE **3.67%** vs 7.73%) but **not** the seasonal-naive baseline (2.77%) — aggregate national load has a near-deterministic weekly cycle. The contribution is therefore **not** point accuracy but the calibrated **conformal prediction interval** (≥90% coverage, distribution-free), which feeds a scenario-based **stochastic LOPF** yielding E[cost] and CVaR₉₀ for risk-aware dispatch — a risk profile no deterministic forecast provides.
 
 ---
 
@@ -36,7 +40,7 @@ PowerFlowJulia is a Julia implementation of core power system simulation and opt
 | Single-period LOPF | Economic dispatch + DC network constraints | HiGHS LP |
 | Multi-period LOPF | 24h dispatch with storage SoC dynamics and wind | HiGHS LP |
 | Unit Commitment | MILP with binary on/off, min up/down time, startup costs | HiGHS MILP |
-| **LSTM Forecaster** | Sequence-to-sequence load forecast, window=24h → horizon=24h | Flux.jl |
+| **LSTM Forecaster** | Day-ahead load forecast, weekly window=168h + calendar/temperature features → horizon=24h | Flux.jl |
 | **Conformal Prediction** | Distribution-free 90% coverage intervals | — |
 | **Stochastic LOPF** | Sample Average Approximation over S demand scenarios | HiGHS LP × S |
 
@@ -120,11 +124,13 @@ println("LMP B1: ", r.lmp["B1"], " €/MWh")
 ## AI Pipeline
 
 ```julia
-# 1. Generate / load historical load data
-data = generate_synthetic_data(365; noise_std=0.05, seed=42)
+# 1. Load real German load data (OPSD/ENTSO-E); synthetic generator is a fallback
+r = load_real_data(; normalize=:peak)          # (n_days × 24) pu matrix
+data = r.data
+# data = generate_synthetic_data(365; noise_std=0.05, seed=42)   # fallback only
 
 # 2. Train LSTM forecaster with conformal calibration
-fc = train_forecaster(data; hidden=32, epochs=100, verbose=true)
+fc = train_forecaster(data; hidden=64, epochs=80, window=168, verbose=true)
 
 # 3. Predict next 24h: point forecast + 90% intervals + 7 scenarios
 pred = predict_scenarios(fc, data[end,:]; n_scenarios=7, α=0.10)
@@ -170,10 +176,10 @@ julia -e 'using Pkg; Pkg.instantiate()'
 
 Packages: `JuMP`, `HiGHS`, `Ipopt`, `PowerModels`, `Flux`, `Plots`, `StatsPlots`, `CSV`, `DataFrames`
 
-**Python ≥ 3.9** (reference benchmarks only)
+**Python 3.12** (reference benchmarks only; versions pinned for reproducibility)
 
 ```bash
-pip install pypsa highspy pandas numpy
+pip install -r python/requirements.txt   # PyPSA 1.2.2, linopy 0.8.0, highspy 1.14.0, ...
 ```
 
 ---

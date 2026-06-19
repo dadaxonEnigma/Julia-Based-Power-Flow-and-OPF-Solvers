@@ -113,6 +113,23 @@ println("    " * "-"^54)
 @printf("    LSTM skill vs persistence    (RMSE): %+.1f %%\n", 100 * (1 - mean(lstm_rmses) / pers_rmse))
 println("    (positive ⇒ LSTM beats the baseline)")
 
+# ── 5. Persist results as a reproducible artifact (Chapter 4 source) ──────────
+out_dir = joinpath(@__DIR__, "..", "..", "results", "ml")
+mkpath(out_dir)
+out_csv = joinpath(out_dir, "real_data_forecast.csv")
+skill_pers = 100 * (1 - mean(lstm_rmses) / pers_rmse)
+open(out_csv, "w") do io
+    println(io, "model,rmse_mean,rmse_std,mape_mean,mape_std,skill_vs_seasonal,skill_vs_persistence,n_seeds,test_days,use_temp")
+    @printf(io, "LSTM,%.6f,%.6f,%.4f,%.4f,%.2f,%.2f,%d,%d,%d\n",
+            mean(lstm_rmses), std(lstm_rmses), mean(lstm_mapes), std(lstm_mapes),
+            mean(skills), skill_pers, length(SEEDS), TEST_DAYS, USE_TEMP ? 1 : 0)
+    @printf(io, "Seasonal-naive,%.6f,0.0,%.4f,0.0,0.0,NaN,%d,%d,%d\n",
+            seas_rmse, seas_mape, length(SEEDS), TEST_DAYS, USE_TEMP ? 1 : 0)
+    @printf(io, "Persistence,%.6f,0.0,%.4f,0.0,NaN,0.0,%d,%d,%d\n",
+            pers_rmse, pers_mape, length(SEEDS), TEST_DAYS, USE_TEMP ? 1 : 0)
+end
+println("\n    Saved → $(relpath(out_csv))")
+
 println("\n" * "="^65)
 println("  Done. $(length(SEEDS)) seeds × $(TEST_DAYS) out-of-time days.")
 println("="^65)
