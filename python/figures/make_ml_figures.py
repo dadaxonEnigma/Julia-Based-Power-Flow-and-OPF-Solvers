@@ -23,7 +23,7 @@ plt.rcParams.update({
     "axes.grid": True, "grid.alpha": 0.3, "grid.linestyle": ":",
     "figure.dpi": 150, "savefig.dpi": 300, "savefig.bbox": "tight",
 })
-RES = os.path.join(os.path.dirname(__file__), "..", "results")
+RES = os.path.join(os.path.dirname(__file__), "..", "..", "results")
 PLT = os.path.join(RES, "plots")
 os.makedirs(PLT, exist_ok=True)
 

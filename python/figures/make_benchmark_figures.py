@@ -40,7 +40,7 @@ plt.rcParams.update({
 # Julia = blue circle solid; PyPSA = red square dashed (distinct in grayscale).
 JL = dict(color="tab:blue", marker="o", linestyle="-",  label="Julia (PowerFlowJulia)")
 PY = dict(color="tab:red",  marker="s", linestyle="--", label="Python (PyPSA)")
-RES = os.path.join(os.path.dirname(__file__), "..", "results")
+RES = os.path.join(os.path.dirname(__file__), "..", "..", "results")
 PLT = os.path.join(RES, "plots")
 os.makedirs(PLT, exist_ok=True)
 

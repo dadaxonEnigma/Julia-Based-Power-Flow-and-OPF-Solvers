@@ -23,7 +23,7 @@ import pypsa
 warnings.filterwarnings("ignore")
 logging.disable(logging.CRITICAL)
 
-DATA = os.path.join(os.path.dirname(__file__), "..", "data")
+DATA = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 CASES = ["case118.m", "case300.m", "case1354pegase.m", "case2869pegase.m"]
 
 
@@ -114,7 +114,7 @@ for c in CASES:
         except Exception as e:
             print(f"    {label:6s} FAILED: {e}")
 
-out = os.path.join(os.path.dirname(__file__), "..", "results", "benchmarks", "pypsa_realcases_benchmark.csv")
+out = os.path.join(os.path.dirname(__file__), "..", "..", "results", "benchmarks", "pypsa_realcases_benchmark.csv")
 with open(out, "w", newline="") as f:
     w = csv.writer(f)
     w.writerow(["case", "n_buses", "module", "time_ms", "std_ms", "min_ms"])
