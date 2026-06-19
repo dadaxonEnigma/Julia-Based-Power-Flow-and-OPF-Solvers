@@ -1,0 +1,4 @@
+model,rmse_mean,rmse_std,mape_mean,mape_std,skill_vs_seasonal,skill_vs_persistence,n_seeds,test_days,use_temp
+LSTM,0.032836,0.002356,4.0252,0.3485,-34.93,57.89,3,60,1
+Seasonal-naive,0.024336,0.0,2.7674,0.0,0.0,NaN,3,60,1
+Persistence,0.077972,0.0,7.7306,0.0,NaN,0.0,3,60,1

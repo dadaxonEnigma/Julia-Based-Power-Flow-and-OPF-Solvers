@@ -296,23 +296,35 @@ add!(net, "GlobalConstraint", "co2_cap";
 
 ### Return fields — `pf()`
 
+Field names differ between DC and AC — they are listed exactly as the solver
+returns them (note `θ` is a Unicode field: access as `r.θ`).
+
 ```julia
+# DC power flow — pf(net) / pf(net, method=:dc)
 r = pf(net)
-
 r.converged          # Bool
-r.theta              # Dict{String,Float64}  — voltage angles [rad]
-r.P_flow             # Dict{String,Float64}  — branch active power flows [MW]
-r.P_inject           # Dict{String,Float64}  — net injection per bus [MW]
+r.θ                  # Dict{String,Float64}  — voltage angles [rad]
+r.line_flows         # Dict{String,Float64}  — line active flows [MW]
+r.trafo_flows        # Dict{String,Float64}  — transformer flows [MW]
+r.all_flows          # Dict{String,Float64}  — lines + transformers combined
+r.P_inj              # Dict{String,Float64}  — net injection per bus [MW]
+r.B                  # Matrix                — susceptance matrix
+r.buses              # Vector{String}        — bus name order
 
-# AC PF only:
+# AC power flow — pf(net, method=:ac); linearized AC is method=:lac (same fields)
+r = pf(net, method=:ac)
+r.converged          # Bool
 r.V_mag              # Dict{String,Float64}  — |V| [p.u.]
-r.Q_flow             # Dict{String,Float64}  — reactive power flows [MVAr]
+r.V_ang              # Dict{String,Float64}  — voltage angles [rad]  (NOT r.θ)
+r.P_flow             # Dict{String,Float64}  — branch active flows [MW]
+r.Q_flow             # Dict{String,Float64}  — reactive flows [MVAr]
+r.buses              # Vector{String}
 ```
 
 ```python
 # PyPSA equivalent fields:
-n.buses_t.v_ang["B1"]        # → r.theta["B1"]
-n.lines_t.p0["L12"]          # → r.P_flow["L12"]
+n.buses_t.v_ang["B1"]        # → r.θ["B1"] (DC) / r.V_ang["B1"] (AC)
+n.lines_t.p0["L12"]          # → r.line_flows["L12"] (DC) / r.P_flow["L12"] (AC)
 n.buses_t.v_mag_pu["B1"]     # → r.V_mag["B1"]  (AC only)
 ```
 
@@ -328,40 +340,66 @@ n.buses_t.v_mag_pu["B1"]     # → r.V_mag["B1"]  (AC only)
 | Stochastic LOPF | `optimize(net, method=:stochastic, T=24, load_scenarios=S)` | — | SAA over S scenarios |
 | Auto | `optimize(net, T=24)` | `n.optimize()` | Selects :lopf / :mp / :uc automatically |
 
-### Return fields — `optimize()` (LOPF / multi-period)
+### Return fields — single-period LOPF — `optimize(net)`
+
+Scalars per generator/bus/line (no time dimension). NB: line flows are `P_line`,
+not `P_flow`; there is **no** `soc`/`gen_dispatch` here (those are multi-period).
+
+```julia
+r = optimize(net)
+
+r.status             # MOI status
+r.converged          # Bool
+r.total_cost         # Float64  — objective value [€]
+r.P_gen              # Dict{String,Float64}  — generator dispatch [MW]
+r.lmp                # Dict{String,Float64}  — LMP per bus [€/MWh]
+r.P_line             # Dict{String,Float64}  — line flows [MW]
+r.P_link             # Dict{String,Float64}  — link flows [MW]
+r.P_store            # Dict{String,Float64}  — store net power [MW]
+r.θ                  # Dict{String,Float64}  — voltage angles [rad]
+```
+
+### Return fields — multi-period LOPF — `optimize(net, T=24)`
+
+Time series per component (`Vector` of length T). NB: generator dispatch is
+`gen_dispatch` here (**not** `P_gen`); there is no line-flow field in this return.
 
 ```julia
 r = optimize(net, T=24)
 
-r.status             # "OPTIMAL"
+r.status             # MOI status
 r.total_cost         # Float64  — objective value [€]
-r.P_gen              # Dict{String,Vector{Float64}}  — generator dispatch per hour [MW]
+r.gen_dispatch       # Dict{String,Vector{Float64}}  — dispatch per hour [MW]
 r.lmp                # Dict{String,Vector{Float64}}  — LMP per bus per hour [€/MWh]
-r.P_flow             # Dict{String,Vector{Float64}}  — line flows [MW]
 r.soc                # Dict{String,Vector{Float64}}  — storage SoC [MWh]
-r.gen_dispatch       # alias for P_gen (used in plots)
+r.p_ch / r.p_dis     # Dict{String,Vector{Float64}}  — storage charge / discharge [MW]
+r.store_e / r.store_p# Dict{String,Vector{Float64}}  — Store energy / power
+r.link_p             # Dict{String,Vector{Float64}}  — link flows [MW]
 ```
 
 ```python
 # PyPSA equivalent:
-n.generators_t.p["G1"]           # → r.P_gen["G1"]
+n.generators_t.p["G1"]           # → r.P_gen["G1"] (1p) / r.gen_dispatch["G1"] (mp)
 n.buses_t.marginal_price["B1"]   # → r.lmp["B1"]
-n.lines_t.p0["L12"]              # → r.P_flow["L12"]
-n.storage_units_t.state_of_charge["Bat"]  # → r.soc["Bat"]
+n.lines_t.p0["L12"]              # → r.P_line["L12"] (1p only)
+n.storage_units_t.state_of_charge["Bat"]  # → r.soc["Bat"] (mp only)
 ```
 
 ### Return fields — `optimize(method=:uc)`
 
+NB: commitment/startup/shutdown are `u` / `su` / `sd` (short names).
+
 ```julia
 r = optimize(net, method=:uc, T=24)
 
-r.status             # "OPTIMAL"
+r.status             # MOI status
 r.total_cost         # Float64
-r.P_gen              # Dict{String,Vector{Float64}}
-r.commitment         # Dict{String,Vector{Float64}}  — binary u(t) ∈ {0,1}
+r.P_gen              # Dict{String,Vector{Float64}}  — dispatch per hour [MW]
+r.P_line             # Dict{String,Vector{Float64}}  — line flows [MW]
+r.u                  # Dict{String,Vector{Float64}}  — commitment u(t) ∈ {0,1}
+r.su                 # Dict{String,Vector{Float64}}  — startup events
+r.sd                 # Dict{String,Vector{Float64}}  — shutdown events
 r.lmp                # Dict{String,Vector{Float64}}  — from LP relaxation
-r.startup            # Dict{String,Vector{Float64}}  — startup events
-r.shutdown           # Dict{String,Vector{Float64}}  — shutdown events
 ```
 
 ### Return fields — `optimize(method=:stochastic)`

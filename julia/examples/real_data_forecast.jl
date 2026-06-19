@@ -116,7 +116,8 @@ println("    (positive ⇒ LSTM beats the baseline)")
 # ── 5. Persist results as a reproducible artifact (Chapter 4 source) ──────────
 out_dir = joinpath(@__DIR__, "..", "..", "results", "ml")
 mkpath(out_dir)
-out_csv = joinpath(out_dir, "real_data_forecast.csv")
+out_csv = joinpath(out_dir, USE_TEMP ? "real_data_forecast_temp.csv" :
+                                       "real_data_forecast_notemp.csv")
 skill_pers = 100 * (1 - mean(lstm_rmses) / pers_rmse)
 open(out_csv, "w") do io
     println(io, "model,rmse_mean,rmse_std,mape_mean,mape_std,skill_vs_seasonal,skill_vs_persistence,n_seeds,test_days,use_temp")

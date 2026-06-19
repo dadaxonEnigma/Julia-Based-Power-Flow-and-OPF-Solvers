@@ -8,7 +8,7 @@ Author: Dadakhon Turgunboev · Supervisor: Leonard Johard
 
 ## Overview
 
-PowerFlowJulia is a Julia implementation of core power system simulation and optimization algorithms, reimplementing the key functionality of [PyPSA](https://pypsa.org/) with a PyPSA-compatible API. The library achieves **7×–750× speedups** over PyPSA across all solver methods and integrates an **LSTM-based load forecaster** with conformal prediction intervals for uncertainty-aware stochastic dispatch.
+PowerFlowJulia is a Julia implementation of core power system simulation and optimization algorithms, reimplementing the key functionality of [PyPSA](https://pypsa.org/) with a PyPSA-compatible API. The library delivers large speedups over PyPSA's model-build layer — e.g. **118–283× on synthetic LOPF** and **58× on the 2869-bus PEGASE European grid** — using the *same* HiGHS/Ipopt solvers on both sides (AC power flow is the honest exception: slower than PyPSA's Newton–Raphson beyond ~50 buses). It also integrates an **LSTM-based load forecaster** with conformal prediction intervals for uncertainty-aware stochastic dispatch.
 
 ---
 
@@ -16,17 +16,18 @@ PowerFlowJulia is a Julia implementation of core power system simulation and opt
 
 | Method | Network size | Julia (ms) | PyPSA (ms) | Speedup |
 |---|---|---|---|---|
-| DC Power Flow | 500 buses (synthetic) | 10.6 | 811.8 | **77×** |
-| LOPF | 500 buses (synthetic) | 21.0 | 15,857 | **753×** |
-| AC Power Flow | 100 buses (synthetic) | 47.6 | 341.0 | **7×** |
-| Unit Commitment | 14 buses, T=24 | 63.3 | 2,066 | **33×** |
-| Multi-Period LOPF | T=24 | 6.4 | 1,485 | **188×** |
+| DC Power Flow | 300 buses (synthetic) | 2.14 | 360.8 | **169×** |
+| LOPF | 300 buses (synthetic) | 17.1 | 2,022 | **118×** |
+| AC Power Flow | 3 buses (synthetic) | 7.2 | 177.5 | **24.6×** |
+| AC Power Flow | 100 buses (synthetic) | 549.0 | 264.2 | **0.5× (slower)** |
+| Unit Commitment | 14 buses, T=24 | 42.6 | 730.0 | **17×** |
+| Multi-Period LOPF | T=24 | 8.7 | 1,141 | **131×** |
 | LOPF | PEGASE 2869 (real EU grid) | 491 | 28,427 | **58×** |
 | DC Power Flow | PEGASE 2869 (real EU grid) | 423 | 2,005 | **4.7×** |
 
-Speedups come from Julia's leaner model-build layer (no Python/pandas/linopy overhead), **not** a faster solver: LP/MILP use the same HiGHS on both sides, AC PF uses Ipopt. Small-network ratios are dominated by PyPSA's fixed Python overhead; the compute-bound figures (large real networks) are the honest ones. AC PF is the one method where porting yields little: only ~7× at 100 buses and slower than PyPSA's Newton–Raphson beyond that. All figures are the minimum over multiple seeds on pinned PyPSA 1.2.2 / Julia 1.12.5.
+Speedups come from Julia's leaner model-build layer (no Python/pandas/linopy overhead), **not** a faster solver: LP/MILP use the same HiGHS on both sides, AC PF uses Ipopt. Small-network ratios are dominated by PyPSA's fixed Python overhead; the compute-bound figures (large real networks) are the honest ones. AC PF is the one method where the port does **not** win: Julia (PowerModels.jl + Ipopt) is faster only on small networks (24.6× at 3 buses), reaches parity near 50 buses (1.5×), and is about **2× slower** than PyPSA's specialised Newton–Raphson at 100 buses (0.5×) — an algorithmic, not linguistic, gap. All figures are the minimum over multiple seeds on pinned PyPSA 1.2.2 / Julia 1.12.5.
 
-**AI component:** LSTM day-ahead load forecaster trained on **real** German load (OPSD/ENTSO-E). On a strict out-of-time test it beats the persistence baseline (MAPE **3.67%** vs 7.73%) but **not** the seasonal-naive baseline (2.77%) — aggregate national load has a near-deterministic weekly cycle. The contribution is therefore **not** point accuracy but the calibrated **conformal prediction interval** (≥90% coverage, distribution-free), which feeds a scenario-based **stochastic LOPF** yielding E[cost] and CVaR₉₀ for risk-aware dispatch — a risk profile no deterministic forecast provides.
+**AI component:** LSTM day-ahead load forecaster trained on **real** German load (OPSD/ENTSO-E). On a strict out-of-time test it beats the persistence baseline (MAPE **4.03%** vs 7.73%) but **not** the seasonal-naive baseline (2.77%) — aggregate national load has a near-deterministic weekly cycle. The contribution is therefore **not** point accuracy but the calibrated **conformal prediction interval** (≥90% coverage, distribution-free), which feeds a scenario-based **stochastic LOPF** yielding E[cost] and CVaR₉₀ for risk-aware dispatch — a risk profile no deterministic forecast provides.
 
 ---
 

@@ -34,9 +34,15 @@ def save(fig, name):
 
 
 # ── 1. Forecast accuracy (verified multi-seed MAPE, real out-of-time test) ───
-# Source: real_data_forecast.jl, 3 seeds, 60-day out-of-time test (Section ...).
+# Source: real_data_forecast.jl, 3 seeds, 60-day out-of-time test. Read straight
+# from the committed CSVs so this figure can never drift from tab:forecast_metrics.
+_temp   = pd.read_csv(os.path.join(RES, "ml", "real_data_forecast_temp.csv")).set_index("model")
+_notemp = pd.read_csv(os.path.join(RES, "ml", "real_data_forecast_notemp.csv")).set_index("model")
 methods = ["Seasonal-naive", "LSTM\n(+temperature)", "LSTM\n(calendar)", "Persistence"]
-mape    = [2.77, 3.67, 5.83, 7.73]
+mape    = [float(_temp.loc["Seasonal-naive", "mape_mean"]),
+           float(_temp.loc["LSTM", "mape_mean"]),
+           float(_notemp.loc["LSTM", "mape_mean"]),
+           float(_temp.loc["Persistence", "mape_mean"])]
 colors  = ["tab:green", "tab:blue", "tab:cyan", "tab:gray"]
 fig, ax = plt.subplots(figsize=(6.5, 4))
 bars = ax.bar(methods, mape, color=colors, edgecolor="black", linewidth=0.6)
