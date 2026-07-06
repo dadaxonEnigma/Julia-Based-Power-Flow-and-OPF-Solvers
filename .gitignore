@@ -10,7 +10,9 @@ venv/
 
 # Julia
 .julia/
-Manifest.toml
+# julia/Manifest.toml IS tracked for reproducibility (pinned solver/ML versions);
+# ignore stray manifests elsewhere.
+/Manifest.toml
 *.jl.cov
 *.jl.mem
 

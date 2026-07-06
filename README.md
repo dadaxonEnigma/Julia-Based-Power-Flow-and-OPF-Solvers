@@ -91,10 +91,17 @@ thesis/
 
 ## Quick Start
 
-```julia
-# Install dependencies
-# cd julia/ && julia -e 'using Pkg; Pkg.instantiate()'
+> **First-time setup (required).** This is a Julia project with a pinned
+> `Manifest.toml`; the packages must be installed once before anything runs:
+> ```bash
+> cd julia
+> julia --project=. -e 'using Pkg; Pkg.instantiate()'   # ~a few minutes on first run
+> ```
+> Then run an example (`julia --project=. examples/quickstart.jl`) or use the module
+> from the REPL as shown below. Skipping this step fails with
+> `Package JuMP … is required but does not seem to be installed`.
 
+```julia
 include("julia/src/PowerFlowJulia.jl")
 using .PowerFlowJulia
 
@@ -168,14 +175,15 @@ julia julia/examples/ml_forecast_demo.jl
 
 ## Requirements
 
-**Julia ≥ 1.10**
+**Julia ≥ 1.10** — current pinned environment is **1.12.6** (`Manifest.toml`); the
+published benchmark figures were measured on **1.12.5** (see performance note above).
 
 ```bash
 cd julia
-julia -e 'using Pkg; Pkg.instantiate()'
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
-Packages: `JuMP`, `HiGHS`, `Ipopt`, `PowerModels`, `Flux`, `Plots`, `StatsPlots`, `CSV`, `DataFrames`
+Packages: `JuMP`, `HiGHS`, `Ipopt`, `PowerModels`, `Flux`, `Plots`, `StatsPlots`, `CSV`, `DataFrames`, `Dates`
 
 **Python 3.12** (reference benchmarks only; versions pinned for reproducibility)
 
